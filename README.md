@@ -25,10 +25,10 @@ uv run clawd-reachy --standalone</code></pre>
 This project runs a conversation loop on a machine connected to Reachy Mini:
 
 1. capture microphone audio
-2. transcribe speech (Whisper, Faster-Whisper, or OpenAI)
+2. transcribe speech (Whisper, Faster-Whisper, OpenAI, SenseVoice, ...)
 3. send text to OpenClaw Gateway
 4. receive AI response
-5. speak response and animate the robot
+5. speak response (ElevenLabs, Kokoro, Piper, macOS say, ...) and animate the robot
 
 ## Architecture
 
@@ -160,7 +160,9 @@ stt:
   whisper_model: small
 
 tts:
-  backend: elevenlabs
+  backend: kokoro
+  kokoro_speaker_id: 50
+  kokoro_speed: 1.0
 
 behavior:
   wake_word: hey reachy
@@ -181,13 +183,15 @@ See `clawd.example.yaml` for the full list of options.
 | `OPENCLAW_PORT` | Gateway port (default: `18790`) |
 | `OPENCLAW_TOKEN` | Gateway auth token |
 | `OPENCLAW_PATH` | WebSocket path (default: `/desktop-robot`) |
-| `STT_BACKEND` | STT backend: `whisper`, `faster-whisper`, `openai`, `sensevoice` |
+| `STT_BACKEND` | STT backend (auto-detected from registry) |
 | `WHISPER_MODEL` | Whisper model size: `tiny`, `base`, `small`, `medium`, `large` |
-| `TTS_BACKEND` | TTS backend: `elevenlabs`, `macos-say`, `piper`, `melo`, `none` |
+| `TTS_BACKEND` | TTS backend (auto-detected from registry) |
 | `WAKE_WORD` | Wake word to activate listening |
-| `SPEECH_SERVICE_URL` | Remote speech service URL (for sensevoice/melo) |
+| `SPEECH_SERVICE_URL` | Remote speech service URL |
 | `OPENCLAW_OPENAI_TOKEN` / `OPENAI_API_KEY` | OpenAI API key (for `--stt openai`) |
 | `CLAWD_CONFIG` | Path to YAML config file |
+
+Backend-specific env vars are auto-generated from each backend's `Settings` class (e.g. `KOKORO_SPEAKER_ID`, `KOKORO_SPEED`, `SENSEVOICE_LANGUAGE`).
 
 ElevenLabs TTS:
 - `REACHY_ELEVENLABS_API_KEY` or `ELEVENLABS_API_KEY` (required)
@@ -204,9 +208,9 @@ ElevenLabs TTS:
 --gateway-port        OpenClaw port (default: 18790)
 --gateway-token       Auth token
 --reachy-mode         auto | localhost_only | network
---stt                 whisper | faster-whisper | openai | sensevoice
+--stt                 (choices auto-detected from registry)
 --whisper-model       tiny | base | small | medium | large
---tts                 elevenlabs | macos-say | piper | melo | openvoice | none
+--tts                 (choices auto-detected from registry)
 --tts-voice           Voice ID (backend-specific)
 --tts-model           Model path (for Piper)
 --speech-url          Remote speech service URL
@@ -221,6 +225,59 @@ ElevenLabs TTS:
 --standalone          Run without gateway
 --demo                Run robot movement demo and exit
 ```
+
+## STT/TTS Backends
+
+Backends are discovered automatically via the `@register_tts` / `@register_stt` decorators in `backend_registry.py`.
+
+### Built-in STT backends
+
+| Name | Type | Description |
+|---|---|---|
+| `whisper` | Local | OpenAI Whisper (default) |
+| `faster-whisper` | Local | CTranslate2-optimized Whisper |
+| `openai` | Cloud | OpenAI Whisper API |
+| `sensevoice` | Remote | SenseVoice via speech service |
+
+### Built-in TTS backends
+
+| Name | Type | Description |
+|---|---|---|
+| `elevenlabs` | Cloud | ElevenLabs API (default) |
+| `kokoro` | Remote | Kokoro TTS via speech service (sherpa-onnx) |
+| `macos-say` | Local | macOS built-in `say` command |
+| `piper` | Local | Piper neural TTS |
+| `none` | — | Dummy (prints text, no audio) |
+
+### Adding a new backend
+
+Create a class in `tts.py` or `stt.py` with the decorator — that's it:
+
+```python
+@register_tts("my-backend")
+class MyTTS(TTSBackend):
+    """My custom TTS backend."""
+
+    # Optional: declare backend-specific config fields
+    class Settings:
+        api_key: str = ""
+        voice_type: str = "default"
+
+    def __init__(self, base_url="http://localhost:8000", api_key="", voice_type="default"):
+        self._base_url = base_url
+        self._api_key = api_key
+        self._voice_type = voice_type
+
+    async def synthesize(self, text: str) -> str:
+        # Call your API, return path to temp audio file
+        ...
+```
+
+This automatically provides:
+- `--tts my-backend` CLI option
+- `tts.my_backend_api_key` / `tts.my_backend_voice_type` in YAML config
+- `MY_BACKEND_API_KEY` / `MY_BACKEND_VOICE_TYPE` environment variables
+- `config.my_backend_api_key` / `config.my_backend_voice_type` config attributes
 
 ## Installation
 
@@ -289,6 +346,9 @@ uv run pytest
 | `src/clawd_reachy_mini/app.py` | ClawdApp orchestrator |
 | `src/clawd_reachy_mini/reachy_app.py` | Reachy Mini daemon app adapter |
 | `src/clawd_reachy_mini/gateway.py` | OpenClaw WebSocket protocol |
+| `src/clawd_reachy_mini/backend_registry.py` | Auto-discovery registry for STT/TTS backends |
+| `src/clawd_reachy_mini/stt.py` | STT backend implementations |
+| `src/clawd_reachy_mini/tts.py` | TTS backend implementations |
 | `src/clawd_reachy_mini/plugins/` | Motion, conversation, face tracker plugins |
 | `src/clawd_reachy_mini/motion/` | EmotionMapper, HeadTargetBus, HeadWobbler |
 | `src/clawd_reachy_mini/vision/` | MediaPipe face tracker |

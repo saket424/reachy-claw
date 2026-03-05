@@ -25,12 +25,12 @@ stt:
   # sensevoice_language: auto
 
 tts:
-  backend: elevenlabs          # elevenlabs, macos-say, piper, melo, openvoice, none
+  backend: elevenlabs          # elevenlabs, kokoro, macos-say, piper, none
   # voice: voice-id
   # model: /path/to/piper-model
-  # speech_service_url: http://192.168.1.50:8000  # for melo/openvoice
-  # melo_speed: 1.0
-  # melo_language: EN
+  # speech_service_url: http://192.168.1.50:8000  # for kokoro
+  # kokoro_speaker_id: 50      # 45-52 for Chinese voices
+  # kokoro_speed: 1.0
 
 audio:
   # device: "MacBook Pro Microphone"
