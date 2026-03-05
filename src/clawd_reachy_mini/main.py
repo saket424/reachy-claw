@@ -30,6 +30,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
     )
+    parser.add_argument(
+        "-c",
+        "--config",
+        default=None,
+        help="Path to YAML config file (default: auto-detect clawd.yaml or ~/.clawd-reachy-mini/config.yaml)",
+    )
 
     # Connection options
     parser.add_argument(
@@ -52,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     # STT options
     parser.add_argument(
         "--stt",
-        choices=["whisper", "faster-whisper", "openai"],
+        choices=["whisper", "faster-whisper", "openai", "sensevoice"],
         default="whisper",
         help="Speech-to-text backend",
     )
@@ -66,12 +72,30 @@ def parse_args() -> argparse.Namespace:
     # TTS options
     parser.add_argument(
         "--tts",
-        choices=["elevenlabs", "macos-say", "piper", "none"],
+        choices=["elevenlabs", "macos-say", "piper", "melo", "openvoice", "none"],
         default="elevenlabs",
         help="Text-to-speech backend",
     )
     parser.add_argument("--tts-voice", help="TTS voice ID (backend-specific)")
     parser.add_argument("--tts-model", help="TTS model path (for Piper backend)")
+
+    # Remote speech service options
+    parser.add_argument(
+        "--speech-url",
+        default=None,
+        help="URL of remote speech service (for sensevoice/melo/openvoice backends)",
+    )
+    parser.add_argument(
+        "--melo-speed",
+        type=float,
+        default=1.0,
+        help="MeloTTS speech speed",
+    )
+    parser.add_argument(
+        "--melo-language",
+        default="EN",
+        help="MeloTTS language (EN, ZH, etc.)",
+    )
 
     # Audio options
     parser.add_argument("--audio-device", help="Audio input device name")
@@ -119,7 +143,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def create_config(args: argparse.Namespace) -> Config:
-    config = load_config()
+    config = load_config(args.config)
 
     config.gateway_host = args.gateway_host
     config.gateway_port = args.gateway_port
@@ -139,6 +163,12 @@ def create_config(args: argparse.Namespace) -> Config:
     config.idle_animations = not args.no_idle
     config.barge_in_enabled = not args.no_barge_in
     config.standalone_mode = args.standalone
+
+    # Remote speech service
+    if args.speech_url:
+        config.speech_service_url = args.speech_url
+    config.melo_speed = args.melo_speed
+    config.melo_language = args.melo_language
 
     # Vision / face tracking
     if args.no_face_tracking:
