@@ -31,6 +31,7 @@ class BackendInfo:
 # Global registries
 _tts_registry: dict[str, BackendInfo] = {}
 _stt_registry: dict[str, BackendInfo] = {}
+_vad_registry: dict[str, BackendInfo] = {}
 
 
 def _extract_settings(cls: type) -> dict[str, Any]:
@@ -80,6 +81,20 @@ def register_stt(name: str):
     return decorator
 
 
+def register_vad(name: str):
+    """Decorator to register a VAD backend."""
+    def decorator(cls):
+        _vad_registry[name] = BackendInfo(
+            name=name,
+            cls=cls,
+            kind="vad",
+            settings_fields=_extract_settings(cls),
+        )
+        cls._backend_name = name
+        return cls
+    return decorator
+
+
 def get_tts_names() -> list[str]:
     """Return all registered TTS backend names."""
     _ensure_loaded()
@@ -92,6 +107,12 @@ def get_stt_names() -> list[str]:
     return list(_stt_registry.keys())
 
 
+def get_vad_names() -> list[str]:
+    """Return all registered VAD backend names."""
+    _ensure_loaded()
+    return list(_vad_registry.keys())
+
+
 def get_tts_info(name: str) -> BackendInfo | None:
     _ensure_loaded()
     return _tts_registry.get(name)
@@ -102,6 +123,11 @@ def get_stt_info(name: str) -> BackendInfo | None:
     return _stt_registry.get(name)
 
 
+def get_vad_info(name: str) -> BackendInfo | None:
+    _ensure_loaded()
+    return _vad_registry.get(name)
+
+
 def get_all_backend_settings() -> dict[str, dict[str, Any]]:
     """Return all backend settings: {kind_name_field: default}.
 
@@ -109,7 +135,7 @@ def get_all_backend_settings() -> dict[str, dict[str, Any]]:
     """
     _ensure_loaded()
     result = {}
-    for registry in (_tts_registry, _stt_registry):
+    for registry in (_tts_registry, _stt_registry, _vad_registry):
         for info in registry.values():
             for field_name, default in info.settings_fields.items():
                 # Prefix with backend name to avoid collisions
@@ -122,7 +148,7 @@ def get_yaml_mappings() -> dict[tuple[str, str], str]:
     """Auto-generate YAML section/key → config field mappings for backends."""
     _ensure_loaded()
     result = {}
-    for registry, section in [(_tts_registry, "tts"), (_stt_registry, "stt")]:
+    for registry, section in [(_tts_registry, "tts"), (_stt_registry, "stt"), (_vad_registry, "vad")]:
         for info in registry.values():
             for field_name in info.settings_fields:
                 config_key = f"{info.name}_{field_name}"
@@ -135,7 +161,7 @@ def get_env_mappings() -> dict[str, str]:
     """Auto-generate ENV_VAR → config field mappings for backends."""
     _ensure_loaded()
     result = {}
-    for registry in (_tts_registry, _stt_registry):
+    for registry in (_tts_registry, _stt_registry, _vad_registry):
         for info in registry.values():
             for field_name in info.settings_fields:
                 config_key = f"{info.name}_{field_name}"
@@ -155,6 +181,7 @@ def _ensure_loaded():
     if _loaded:
         return
     _loaded = True
-    # Import modules that contain @register_tts / @register_stt decorators
+    # Import modules that contain @register_tts / @register_stt / @register_vad decorators
     import clawd_reachy_mini.stt  # noqa: F401
     import clawd_reachy_mini.tts  # noqa: F401
+    import clawd_reachy_mini.vad  # noqa: F401

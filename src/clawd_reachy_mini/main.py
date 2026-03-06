@@ -56,30 +56,38 @@ def parse_args() -> argparse.Namespace:
     )
 
     # STT options
-    from clawd_reachy_mini.backend_registry import get_stt_names, get_tts_names
+    from clawd_reachy_mini.backend_registry import get_stt_names, get_tts_names, get_vad_names
 
     parser.add_argument(
         "--stt",
         choices=get_stt_names(),
-        default="whisper",
-        help="Speech-to-text backend",
+        default=None,
+        help="Speech-to-text backend (default: whisper)",
     )
     parser.add_argument(
         "--whisper-model",
         choices=["tiny", "base", "small", "medium", "large"],
-        default="base",
-        help="Whisper model size",
+        default=None,
+        help="Whisper model size (default: base)",
     )
 
     # TTS options
     parser.add_argument(
         "--tts",
         choices=get_tts_names(),
-        default="elevenlabs",
-        help="Text-to-speech backend",
+        default=None,
+        help="Text-to-speech backend (default: elevenlabs)",
     )
     parser.add_argument("--tts-voice", help="TTS voice ID (backend-specific)")
     parser.add_argument("--tts-model", help="TTS model path (for Piper backend)")
+
+    # VAD options
+    parser.add_argument(
+        "--vad",
+        choices=get_vad_names(),
+        default=None,
+        help="Voice activity detection backend (default: silero)",
+    )
 
     # Remote speech service options
     parser.add_argument(
@@ -144,9 +152,14 @@ def create_config(args: argparse.Namespace) -> Config:
 
     config.reachy_connection_mode = args.reachy_mode
     config.audio_device = args.audio_device
-    config.stt_backend = args.stt
-    config.whisper_model = args.whisper_model
-    config.tts_backend = args.tts
+    if args.stt is not None:
+        config.stt_backend = args.stt
+    if args.whisper_model is not None:
+        config.whisper_model = args.whisper_model
+    if args.tts is not None:
+        config.tts_backend = args.tts
+    if args.vad is not None:
+        config.vad_backend = args.vad
     config.tts_voice = args.tts_voice
     config.tts_model = args.tts_model
     config.wake_word = args.wake_word
@@ -323,6 +336,7 @@ def main() -> None:
 
     logging.info(f"STT: {config.stt_backend} ({config.whisper_model})")
     logging.info(f"TTS: {config.tts_backend}")
+    logging.info(f"VAD: {config.vad_backend}")
     if config.wake_word:
         logging.info(f"Wake word: {config.wake_word}")
     if config.barge_in_enabled:

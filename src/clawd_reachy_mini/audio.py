@@ -26,12 +26,13 @@ class AudioChunk:
 class AudioCapture:
     """Captures audio from Reachy Mini's microphone."""
 
-    def __init__(self, config: Config, reachy_mini=None):
+    def __init__(self, config: Config, reachy_mini=None, vad=None):
         self.config = config
         self.reachy = reachy_mini
         self._running = False
         self._buffer: deque[np.ndarray] = deque(maxlen=1000)
         self._device_id = None
+        self._vad = vad  # VADBackend instance (optional)
 
         # Find the specified audio device
         if config.audio_device:
@@ -116,7 +117,8 @@ class AudioCapture:
                 if not isinstance(chunk, np.ndarray):
                     chunk = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
 
-                # Check for speech/silence
+                # Check for speech/silence using VAD
+                has_speech = self._detect_speech(chunk)
                 energy = np.abs(chunk).mean()
                 energy_samples.append(energy)
 
@@ -124,9 +126,9 @@ class AudioCapture:
                 if len(energy_samples) % 32 == 0:
                     avg_energy = np.mean(energy_samples[-32:])
                     max_energy = np.max(energy_samples[-32:])
-                    logger.info(f"🎚️ Audio: avg={avg_energy:.4f}, max={max_energy:.4f} (threshold: {self.config.silence_threshold})")
+                    logger.info(f"🎚️ Audio: avg={avg_energy:.4f}, max={max_energy:.4f}, vad={has_speech}")
 
-                if energy > self.config.silence_threshold:
+                if has_speech:
                     if not speech_detected:
                         logger.info("🗣️ Speech detected!")
                     speech_detected = True
@@ -155,13 +157,27 @@ class AudioCapture:
                     pass
 
         if not frames or not speech_detected:
+            if self._vad:
+                self._vad.reset()
             return None
+
+        # Reset VAD state for next utterance
+        if self._vad:
+            self._vad.reset()
 
         # Concatenate all frames
         audio = np.concatenate(frames)
         duration = len(audio) / self.config.sample_rate
         logger.info(f"📼 Captured {duration:.2f}s of audio ({len(frames)} chunks, {len(audio)} samples)")
         return audio
+
+    def _detect_speech(self, chunk: np.ndarray) -> bool:
+        """Detect speech using VAD backend or energy fallback."""
+        if self._vad is not None:
+            return self._vad.is_speech(chunk, self.config.sample_rate)
+        # Fallback: simple energy threshold
+        energy = float(np.abs(chunk).mean())
+        return energy > self.config.silence_threshold
 
     async def _read_local_mic(self, frames: int) -> np.ndarray | None:
         """Read from local microphone using sounddevice."""
@@ -180,8 +196,8 @@ class AudioCapture:
                 self._input_stream.start()
                 logger.debug(f"Started audio input stream on device {self._device_id}")
 
-            # Read available data
-            data, overflowed = self._input_stream.read(frames)
+            # Read available data (blocking call, run in thread)
+            data, overflowed = await asyncio.to_thread(self._input_stream.read, frames)
             if overflowed:
                 logger.warning("Audio buffer overflow - some audio was lost")
             return data.flatten()

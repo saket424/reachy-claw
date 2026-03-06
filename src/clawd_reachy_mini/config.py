@@ -50,8 +50,12 @@ class Config:
     # These fields are also generated dynamically, but we keep commonly
     # used ones here for IDE autocompletion and backward compatibility.
     sensevoice_language: str = "auto"
-    kokoro_speaker_id: int = 50  # zm_yunxi (中文男声)
-    kokoro_speed: float = 1.0
+    kokoro_speaker_id: int = 3  # zf_001 (中文女声)
+    kokoro_speed: float = 1.2
+
+    # VAD
+    vad_backend: str = "silero"  # "silero", "energy"
+    silero_threshold: float = 0.5
 
     # Audio settings
     audio_device: str | None = None
@@ -137,6 +141,8 @@ _YAML_FIELD_MAP: dict[tuple[str, str], str] = {
     ("tts", "voice"): "tts_voice",
     ("tts", "model"): "tts_model",
     ("tts", "speech_service_url"): "speech_service_url",
+    ("vad", "backend"): "vad_backend",
+    ("vad", "threshold"): "silero_threshold",
     ("audio", "device"): "audio_device",
     ("audio", "sample_rate"): "sample_rate",
     ("audio", "silence_threshold"): "silence_threshold",
@@ -175,6 +181,7 @@ _ENV_FIELD_MAP: dict[str, str] = {
     "WAKE_WORD": "wake_word",
     "SPEECH_SERVICE_URL": "speech_service_url",
     "SENSEVOICE_LANGUAGE": "sensevoice_language",
+    "VAD_BACKEND": "vad_backend",
 }
 
 

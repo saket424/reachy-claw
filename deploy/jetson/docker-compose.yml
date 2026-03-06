@@ -1,0 +1,21 @@
+services:
+  speech:
+    build: .
+    runtime: nvidia
+    ports:
+      - "8000:8000"
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - TTS_PROVIDER=cuda
+      - TTS_DEFAULT_SID=3
+      - SENSEVOICE_LANGUAGE=auto
+    volumes:
+      - speech-models:/opt/models
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+
+volumes:
+  speech-models:

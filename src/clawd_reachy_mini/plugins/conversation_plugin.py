@@ -20,6 +20,7 @@ from ..motion.head_wobbler import HeadWobbler
 from ..plugin import Plugin
 from ..stt import create_stt_backend
 from ..tts import create_tts_backend
+from ..vad import create_vad_backend
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +60,16 @@ class ConversationPlugin(Plugin):
             backend=config.tts_backend,
             voice=config.tts_voice,
             model=config.tts_model,
+            config=config,
         )
         logger.info(f"TTS backend: {config.tts_backend}")
 
+        # Initialize VAD
+        vad = create_vad_backend(backend=config.vad_backend, config=config)
+        await asyncio.to_thread(vad.preload)
+
         # Initialize audio capture
-        self._audio = AudioCapture(config, self.app.reachy)
+        self._audio = AudioCapture(config, self.app.reachy, vad=vad)
 
         if config.wake_word:
             self._wake_detector = WakeWordDetector(config.wake_word)
