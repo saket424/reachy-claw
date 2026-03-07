@@ -71,9 +71,10 @@ def samples_to_wav(samples: list, sample_rate: int) -> bytes:
     buf.write(b"data")
     buf.write(struct.pack("<I", data_size))
 
-    for s in samples:
-        s = max(-1.0, min(1.0, s))
-        buf.write(struct.pack("<h", int(s * 32767)))
+    import numpy as np
+    arr = np.array(samples, dtype=np.float32)
+    np.clip(arr, -1.0, 1.0, out=arr)
+    buf.write((arr * 32767).astype(np.int16).tobytes())
 
     return buf.getvalue()
 

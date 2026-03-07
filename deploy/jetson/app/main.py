@@ -158,6 +158,7 @@ async def asr_stream(
       Client sends: empty bytes b"" to signal end of audio
       Server sends: JSON {"text": "...", "is_final": bool, "is_stable": bool}
     """
+    import asyncio
     import json
 
     import numpy as np
@@ -179,8 +180,10 @@ async def asr_stream(
             data = await ws.receive_bytes()
 
             if len(data) == 0:
-                # End of audio — finalize
-                final_text = streaming_asr_service.finalize(stream)
+                # End of audio — finalize (run in thread to avoid blocking event loop)
+                final_text = await asyncio.to_thread(
+                    streaming_asr_service.finalize, stream
+                )
                 await ws.send_json({
                     "text": final_text,
                     "is_final": True,
@@ -191,7 +194,9 @@ async def asr_stream(
             # Convert int16 bytes to float32
             samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
 
-            text, is_endpoint = streaming_asr_service.feed_and_decode(
+            # Run decode in thread to avoid blocking event loop under concurrent load
+            text, is_endpoint = await asyncio.to_thread(
+                streaming_asr_service.feed_and_decode,
                 stream, samples, sample_rate
             )
 
