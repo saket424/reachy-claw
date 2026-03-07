@@ -34,12 +34,12 @@ class Config:
     reachy_media_backend: str = "default"  # "default" or "gstreamer"
 
     # Speech-to-text
-    stt_backend: str = "whisper"  # "whisper", "faster-whisper", "openai", "sensevoice"
+    stt_backend: str = "paraformer-streaming"  # "paraformer-streaming", "whisper", "faster-whisper", "openai", "sensevoice"
     whisper_model: str = "base"  # "tiny", "base", "small", "medium", "large"
     openai_api_key: str | None = None
 
     # Text-to-speech
-    tts_backend: str = "elevenlabs"  # "elevenlabs", "macos-say", "piper", "kokoro", "none"
+    tts_backend: str = "matcha"  # "matcha", "kokoro", "elevenlabs", "macos-say", "piper", "none"
     tts_voice: str | None = None
     tts_model: str | None = None
 
@@ -50,6 +50,8 @@ class Config:
     # These fields are also generated dynamically, but we keep commonly
     # used ones here for IDE autocompletion and backward compatibility.
     sensevoice_language: str = "auto"
+    matcha_speaker_id: int = 0
+    matcha_speed: float = 1.2
     kokoro_speaker_id: int = 3  # zf_001 (中文女声)
     kokoro_speed: float = 1.2
 
@@ -63,6 +65,10 @@ class Config:
     silence_threshold: float = 0.01
     silence_duration: float = 1.5
     max_recording_duration: float = 30.0
+
+    # Gateway session
+    gateway_warmup: bool = True  # send warmup message on connect to pre-init OpenClaw session
+    gateway_keepalive_s: int = 60  # ping interval to prevent session timeout (0=disabled)
 
     # Barge-in
     barge_in_enabled: bool = True
@@ -149,6 +155,8 @@ _YAML_FIELD_MAP: dict[tuple[str, str], str] = {
     ("audio", "silence_threshold"): "silence_threshold",
     ("audio", "silence_duration"): "silence_duration",
     ("audio", "max_recording_duration"): "max_recording_duration",
+    ("gateway", "warmup"): "gateway_warmup",
+    ("gateway", "keepalive_s"): "gateway_keepalive_s",
     ("barge_in", "enabled"): "barge_in_enabled",
     ("barge_in", "energy_threshold"): "barge_in_energy_threshold",
     ("barge_in", "confirm_frames"): "barge_in_confirm_frames",
@@ -230,6 +238,44 @@ def _apply_yaml(config: Config, data: dict[str, Any]) -> None:
                 except (ValueError, TypeError):
                     pass
             setattr(config, field_name, value)
+
+    # Support nested backend config blocks:
+    #   tts:
+    #     kokoro:
+    #       speaker_id: 3
+    #       speed: 1.2
+    # Maps to config fields: kokoro_speaker_id, kokoro_speed
+    from clawd_reachy_mini.backend_registry import (
+        get_tts_info, get_stt_info, get_vad_info,
+        get_tts_names, get_stt_names, get_vad_names,
+    )
+    for section, get_names, get_info in [
+        ("tts", get_tts_names, get_tts_info),
+        ("stt", get_stt_names, get_stt_info),
+        ("vad", get_vad_names, get_vad_info),
+    ]:
+        section_data = data.get(section)
+        if not isinstance(section_data, dict):
+            continue
+        for backend_name in get_names():
+            block = section_data.get(backend_name)
+            if not isinstance(block, dict):
+                continue
+            info = get_info(backend_name)
+            if info is None:
+                continue
+            for field_name in info.settings_fields:
+                if field_name not in block:
+                    continue
+                config_key = f"{backend_name}_{field_name}"
+                value = block[field_name]
+                current = getattr(config, config_key, None)
+                if current is not None and not isinstance(current, type(None)):
+                    try:
+                        value = type(current)(value)
+                    except (ValueError, TypeError):
+                        pass
+                setattr(config, config_key, value)
 
 
 def _apply_env(config: Config) -> None:

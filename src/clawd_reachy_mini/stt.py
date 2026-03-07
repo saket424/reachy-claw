@@ -202,7 +202,9 @@ class SenseVoiceSTT(STTBackend):
             data = resp.read().decode()
             logger.info(f"SenseVoice service health: {data}")
         except Exception as e:
-            logger.warning(f"SenseVoice service not reachable: {e}")
+            raise ConnectionError(
+                f"SenseVoice service not reachable at {self._base_url}: {e}"
+            ) from e
 
     def transcribe(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
         import io
@@ -284,7 +286,9 @@ class ParaformerStreamingSTT(STTBackend):
             data = resp.read().decode()
             logger.info(f"Paraformer streaming service health: {data}")
         except Exception as e:
-            logger.warning(f"Paraformer streaming service not reachable: {e}")
+            raise ConnectionError(
+                f"Paraformer streaming service not reachable at {self._base_url}: {e}"
+            ) from e
 
     def transcribe(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
         """Batch fallback: POST to /asr like SenseVoice."""
@@ -386,11 +390,8 @@ class ParaformerStreamingSTT(STTBackend):
 
         # Non-blocking receive — check if server sent a result
         try:
-            self._ws.socket.setblocking(False)
             raw = self._ws.recv(timeout=0)
-            self._ws.socket.setblocking(True)
-        except Exception:
-            self._ws.socket.setblocking(True)
+        except (TimeoutError, Exception):
             return None
 
         try:
@@ -482,4 +483,22 @@ def create_stt_backend(config: Config) -> STTBackend:
     filtered = {k: v for k, v in kwargs.items() if k in valid_params}
 
     logger.info(f"Using STT backend: {backend}")
-    return info.cls(**filtered)
+    instance = info.cls(**filtered)
+
+    # Fallback: if remote backend is unreachable, fall back to whisper
+    if backend in ("paraformer-streaming", "sensevoice"):
+        try:
+            instance.preload()
+        except Exception as e:
+            logger.warning(f"STT backend {backend!r} not available ({e}), falling back to whisper")
+            from clawd_reachy_mini.backend_registry import get_stt_info as _get_info
+
+            fallback_info = _get_info("whisper")
+            if fallback_info is None:
+                raise
+            fallback_kwargs = {}
+            if hasattr(config, "whisper_model"):
+                fallback_kwargs["model_name"] = config.whisper_model
+            instance = fallback_info.cls(**fallback_kwargs)
+
+    return instance

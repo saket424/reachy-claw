@@ -172,18 +172,19 @@ class NoopTTS(TTSBackend):
         return tmp.name
 
 
+@register_tts("matcha")
 @register_tts("kokoro")
 class KokoroTTS(TTSBackend):
-    """Remote Kokoro TTS via Jetson speech service (sherpa-onnx, CUDA)."""
+    """Remote TTS via Jetson speech service (sherpa-onnx, CUDA)."""
 
     class Settings:
-        speaker_id: int = 3
+        speaker_id: int = 0
         speed: float = 1.0
 
     def __init__(
         self,
         base_url: str = "http://localhost:8000",
-        speaker_id: int = 3,
+        speaker_id: int = 0,
         speed: float = 1.0,
     ):
         self._base_url = base_url.rstrip("/")
@@ -192,9 +193,22 @@ class KokoroTTS(TTSBackend):
         self._check_streaming_support()
 
     def _check_streaming_support(self) -> None:
-        """Probe server for /tts/stream endpoint at init time."""
+        """Probe server health and /tts/stream endpoint at init time.
+
+        Raises ConnectionError if the speech service is not reachable at all,
+        allowing the TTS factory to fall back to another backend.
+        """
         import urllib.request
 
+        # First check if the service is reachable
+        try:
+            urllib.request.urlopen(f"{self._base_url}/health", timeout=3)
+        except Exception as e:
+            raise ConnectionError(
+                f"Kokoro speech service not reachable at {self._base_url}: {e}"
+            ) from e
+
+        # Then check for streaming support
         try:
             req = urllib.request.Request(
                 f"{self._base_url}/tts/stream", method="OPTIONS"
@@ -263,10 +277,10 @@ class KokoroTTS(TTSBackend):
             method="POST",
         )
 
-        resp = await asyncio.to_thread(urllib.request.urlopen, req, 30)
+        resp = await asyncio.to_thread(lambda: urllib.request.urlopen(req, timeout=30))
 
         # Read sample_rate from first 4 bytes (little-endian uint32)
-        sr_bytes = resp.read(4)
+        sr_bytes = await asyncio.to_thread(resp.read, 4)
         if len(sr_bytes) < 4:
             return
         sample_rate = struct.unpack("<I", sr_bytes)[0]
@@ -274,7 +288,7 @@ class KokoroTTS(TTSBackend):
         # Read 16-bit PCM chunks (4096 samples = ~256ms at 16kHz)
         chunk_bytes_size = 4096 * 2  # 4096 int16 samples
         while True:
-            raw = resp.read(chunk_bytes_size)
+            raw = await asyncio.to_thread(resp.read, chunk_bytes_size)
             if not raw:
                 break
             audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
@@ -321,4 +335,20 @@ def create_tts_backend(
     filtered = {k: v for k, v in kwargs.items() if k in valid_params}
 
     logger.info(f"Using TTS backend: {name}")
-    return info.cls(**filtered)
+    try:
+        instance = info.cls(**filtered)
+    except Exception as e:
+        if name in ("kokoro", "matcha"):
+            import platform
+
+            fallback_name = "say" if platform.system() == "Darwin" else "none"
+            logger.warning(
+                f"TTS backend {name!r} not available ({e}), falling back to {fallback_name}"
+            )
+            fallback_info = get_tts_info(fallback_name)
+            if fallback_info is None:
+                raise
+            return fallback_info.cls()
+        raise
+
+    return instance

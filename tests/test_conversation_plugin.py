@@ -149,7 +149,7 @@ class TestOutputPipeline:
         plugin._running = True
         spoken = []
 
-        async def mock_speak(text):
+        async def mock_speak(text, prefetched_chunks=None):
             spoken.append(text)
             return False
 
@@ -176,7 +176,7 @@ class TestOutputPipeline:
         plugin._running = True
         spoken = []
 
-        async def mock_speak(text):
+        async def mock_speak(text, prefetched_chunks=None):
             spoken.append(text)
             # Simulate interrupt after first sentence
             plugin._interrupt_event.set()
@@ -207,7 +207,7 @@ class TestOutputPipeline:
         plugin._running = True
         speaking_during = []
 
-        async def mock_speak(text):
+        async def mock_speak(text, prefetched_chunks=None):
             speaking_during.append(standalone_app.is_speaking)
             return False
 

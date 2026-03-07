@@ -118,7 +118,7 @@ def test_load_config_missing_yaml_uses_defaults():
     config = load_config("/nonexistent/clawd.yaml")
 
     assert config.gateway_host == "127.0.0.1"
-    assert config.stt_backend == "whisper"
+    assert config.stt_backend == "paraformer-streaming"
 
 
 def test_load_config_partial_yaml(tmp_path):
@@ -129,7 +129,7 @@ def test_load_config_partial_yaml(tmp_path):
     config = load_config(cfg_file)
 
     assert config.tts_backend == "piper"
-    assert config.stt_backend == "whisper"  # untouched default
+    assert config.stt_backend == "paraformer-streaming"  # untouched default
     assert config.gateway_host == "127.0.0.1"  # untouched default
 
 
@@ -153,3 +153,23 @@ def test_load_config_env_clawd_config(tmp_path, monkeypatch):
     config = load_config()
 
     assert config.tts_backend == "none"
+
+
+def test_nested_backend_config(tmp_path):
+    """Backend settings can be nested under the backend name."""
+    cfg_file = tmp_path / "clawd.yaml"
+    cfg_file.write_text(
+        """\
+tts:
+  backend: kokoro
+  kokoro:
+    speaker_id: 7
+    speed: 1.5
+"""
+    )
+
+    config = load_config(cfg_file)
+
+    assert config.tts_backend == "kokoro"
+    assert config.kokoro_speaker_id == 7
+    assert config.kokoro_speed == 1.5

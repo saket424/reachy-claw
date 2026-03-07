@@ -37,10 +37,11 @@ class TestSenseVoiceSTT:
         with patch("urllib.request.urlopen", return_value=mock_resp):
             stt.preload()  # should not raise
 
-    def test_preload_unreachable_warns(self):
+    def test_preload_unreachable_raises(self):
         stt = SenseVoiceSTT(base_url="http://unreachable:9999")
         with patch("urllib.request.urlopen", side_effect=Exception("timeout")):
-            stt.preload()  # should not raise, just warn
+            with pytest.raises(ConnectionError):
+                stt.preload()
 
     def test_transcribe_posts_wav(self):
         stt = SenseVoiceSTT(base_url="http://jetson:8000", language="auto")
@@ -86,9 +87,15 @@ class TestSenseVoiceSTT:
 
 
 class TestSenseVoiceFactory:
+    def _mock_health(self):
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"asr": true}'
+        return patch("urllib.request.urlopen", return_value=mock_resp)
+
     def test_creates_sensevoice(self):
         config = Config(stt_backend="sensevoice")
-        backend = create_stt_backend(config)
+        with self._mock_health():
+            backend = create_stt_backend(config)
         assert isinstance(backend, SenseVoiceSTT)
         assert backend._base_url == "http://localhost:8000"
 
@@ -98,7 +105,8 @@ class TestSenseVoiceFactory:
             speech_service_url="http://jetson:8000",
             sensevoice_language="zh",
         )
-        backend = create_stt_backend(config)
+        with self._mock_health():
+            backend = create_stt_backend(config)
         assert isinstance(backend, SenseVoiceSTT)
         assert backend._base_url == "http://jetson:8000"
         assert backend._language == "zh"
@@ -108,15 +116,25 @@ class TestSenseVoiceFactory:
 
 
 class TestKokoroTTS:
+    def _mock_health(self):
+        """Return a context manager that mocks urlopen for health + streaming checks."""
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"tts": true}'
+        mock_resp.status = 200
+        return patch("urllib.request.urlopen", return_value=mock_resp)
+
     def test_init(self):
-        tts = KokoroTTS(base_url="http://jetson:8000", speaker_id=45, speed=0.8)
+        with self._mock_health():
+            tts = KokoroTTS(base_url="http://jetson:8000", speaker_id=45, speed=0.8)
         assert tts._base_url == "http://jetson:8000"
         assert tts._speaker_id == 45
         assert tts._speed == 0.8
 
     @pytest.mark.asyncio
     async def test_synthesize_returns_wav_path(self):
-        tts = KokoroTTS(base_url="http://jetson:8000")
+        with self._mock_health():
+            tts = KokoroTTS(base_url="http://jetson:8000")
+
         mock_resp = MagicMock()
         # Minimal WAV bytes
         wav_bytes = b"RIFF" + struct.pack("<I", 36) + b"WAVE"
@@ -134,14 +152,16 @@ class TestKokoroTTS:
                 assert "/tts" in req.full_url
                 body = json.loads(req.data.decode())
                 assert body["text"] == "Hello world"
-                assert body["sid"] == 3
+                assert body["sid"] == 0
                 assert body["speed"] == 1.0
             finally:
                 os.unlink(path)
 
     @pytest.mark.asyncio
     async def test_synthesize_custom_params(self):
-        tts = KokoroTTS(base_url="http://jetson:8000", speaker_id=45, speed=1.5)
+        with self._mock_health():
+            tts = KokoroTTS(base_url="http://jetson:8000", speaker_id=45, speed=1.5)
+
         mock_resp = MagicMock()
         mock_resp.read.return_value = b"fake wav"
 
@@ -161,18 +181,41 @@ class TestKokoroTTS:
 
 
 class TestKokoroTTSFactory:
+    def _mock_health(self):
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"tts": true}'
+        mock_resp.status = 200
+        return patch("urllib.request.urlopen", return_value=mock_resp)
+
     def test_creates_kokoro(self):
-        config = Config(speech_service_url="http://jetson:8000", kokoro_speaker_id=45)
-        backend = create_tts_backend(backend="kokoro", config=config)
+        with self._mock_health():
+            config = Config(speech_service_url="http://jetson:8000", kokoro_speaker_id=45)
+            backend = create_tts_backend(backend="kokoro", config=config)
         assert isinstance(backend, KokoroTTS)
         assert backend._base_url == "http://jetson:8000"
         assert backend._speaker_id == 45
 
     def test_creates_kokoro_defaults(self):
-        backend = create_tts_backend(backend="kokoro")
+        with self._mock_health():
+            backend = create_tts_backend(backend="kokoro")
         assert isinstance(backend, KokoroTTS)
         assert backend._base_url == "http://localhost:8000"
-        assert backend._speaker_id == 3
+        assert backend._speaker_id == 0
+
+    def test_creates_matcha(self):
+        with self._mock_health():
+            config = Config(speech_service_url="http://jetson:8000", matcha_speaker_id=0)
+            backend = create_tts_backend(backend="matcha", config=config)
+        assert isinstance(backend, KokoroTTS)
+        assert backend._base_url == "http://jetson:8000"
+        assert backend._speaker_id == 0
+
+    def test_creates_matcha_defaults(self):
+        with self._mock_health():
+            backend = create_tts_backend(backend="matcha")
+        assert isinstance(backend, KokoroTTS)
+        assert backend._base_url == "http://localhost:8000"
+        assert backend._speaker_id == 0
 
 
 # ── Config fields ───────────────────────────────────────────────────────
@@ -185,6 +228,8 @@ class TestConfigSpeechFields:
         assert config.sensevoice_language == "auto"
         assert config.kokoro_speaker_id == 3
         assert config.kokoro_speed == 1.2
+        assert config.matcha_speaker_id == 0
+        assert config.matcha_speed == 1.2
 
     def test_env_override(self):
         with patch.dict(os.environ, {"SPEECH_SERVICE_URL": "http://custom:9000"}):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -62,6 +63,8 @@ class DesktopRobotClient:
         # Per-run completion tracking
         self._run_futures: dict[str, asyncio.Future[str]] = {}
         self._run_buffers: dict[str, str] = {}
+        self._keepalive_task: asyncio.Task | None = None
+        self._session_warmed: bool = False
 
         # Global stream callbacks (set by the interface)
         self.callbacks = StreamCallbacks()
@@ -104,12 +107,52 @@ class DesktopRobotClient:
 
             logger.info(f"Connected to desktop-robot at {self.config.desktop_robot_url}")
 
+            # Start keepalive pings
+            interval = getattr(self.config, "gateway_keepalive_s", 60)
+            if interval > 0:
+                self._keepalive_task = asyncio.create_task(
+                    self._keepalive_loop(interval)
+                )
+
         except Exception as e:
             logger.error(f"Failed to connect: {e}")
             raise
 
+    async def warmup_session(self) -> None:
+        """Send a trivial message to pre-initialize the OpenClaw session.
+
+        The first message in a new session incurs ~2-3s cold start (tool
+        registration, prompt building, DashScope connection init). By sending
+        a throwaway message during startup, we shift that cost to before the
+        user starts speaking.
+        """
+        if not self.is_connected or self._session_warmed:
+            return
+
+        logger.info("Warming up gateway session...")
+        t0 = time.perf_counter()
+        try:
+            # Send a minimal message — fast to process, minimal token usage
+            response = await asyncio.wait_for(
+                self.send_message("."), timeout=15.0
+            )
+            elapsed = (time.perf_counter() - t0) * 1000
+            self._session_warmed = True
+            logger.info(f"Session warmup complete ({elapsed:.0f}ms)")
+        except Exception as e:
+            elapsed = (time.perf_counter() - t0) * 1000
+            logger.warning(f"Session warmup failed ({elapsed:.0f}ms): {e}")
+
     async def disconnect(self) -> None:
         """Disconnect from the server."""
+        if self._keepalive_task:
+            self._keepalive_task.cancel()
+            try:
+                await self._keepalive_task
+            except asyncio.CancelledError:
+                pass
+            self._keepalive_task = None
+
         if self._listener_task:
             self._listener_task.cancel()
             try:
@@ -211,6 +254,21 @@ class DesktopRobotClient:
         finally:
             self._fail_pending_runs("desktop-robot listener stopped")
             self._run_buffers.clear()
+
+    async def _keepalive_loop(self, interval: int) -> None:
+        """Send periodic pings to prevent gateway session timeout."""
+        try:
+            while self._connected:
+                await asyncio.sleep(interval)
+                if self._connected and self._ws:
+                    try:
+                        await self._send(
+                            {"type": "ping", "ts": int(time.time() * 1000)}
+                        )
+                    except Exception:
+                        break
+        except asyncio.CancelledError:
+            pass
 
     async def _handle(self, msg: dict) -> None:
         t = msg.get("type", "")

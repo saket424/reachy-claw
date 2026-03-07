@@ -120,6 +120,10 @@ class ConversationPlugin(Plugin):
             self._client = DesktopRobotClient(config)
             self._setup_callbacks()
             await self._client.connect()
+
+            # Warm up the session to avoid cold-start latency on first real message
+            if config.gateway_warmup:
+                await self._client.warmup_session()
         else:
             logger.info("Running in standalone mode - no server connection")
 
@@ -231,13 +235,21 @@ class ConversationPlugin(Plugin):
         _drain_queue(self._stream_text_queue)
 
     async def _on_stream_delta(self, text: str, run_id: str) -> None:
-        logger.debug(f"Delta [{run_id[:8]}]: {text}")
         if self._state == ConvState.THINKING:
+            # First delta = TTFT measurement point
+            if hasattr(self, "_t_send") and self._t_send:
+                ttft = (time.perf_counter() - self._t_send) * 1000
+                logger.info(f"TTFT: {ttft:.0f}ms (send → first delta)")
             self._set_state(ConvState.SPEAKING)
         await self._stream_text_queue.put(text)
 
     async def _on_stream_end(self, full_text: str, run_id: str) -> None:
-        logger.info(f"Response complete ({len(full_text)} chars)")
+        if hasattr(self, "_t_send") and self._t_send:
+            total = (time.perf_counter() - self._t_send) * 1000
+            logger.info(f"Response complete ({len(full_text)} chars, {total:.0f}ms)")
+            self._t_send = None
+        else:
+            logger.info(f"Response complete ({len(full_text)} chars)")
         await self._stream_text_queue.put(None)
 
     async def _on_stream_abort(self, reason: str, run_id: str) -> None:
@@ -432,6 +444,7 @@ class ConversationPlugin(Plugin):
         # Send to AI
         logger.info("Sending to AI...")
         self._set_state(ConvState.THINKING)
+        self._t_send = time.perf_counter()
 
         if self.app.config.play_emotions:
             self.app.emotions.queue_emotion("thinking")
@@ -451,7 +464,10 @@ class ConversationPlugin(Plugin):
 
     async def _sentence_accumulator(self) -> None:
         """Consume stream text deltas, split into sentences, feed sentence_queue."""
-        sentence_ends = {".", "!", "?", "\n", "\u3002", "\uff01", "\uff1f", "\uff1b"}
+        sentence_ends = {
+            ".", "!", "?", ",", ";", "\n",
+            "\u3002", "\uff01", "\uff1f", "\uff0c", "\uff1b", "\u3001",
+        }
         buffer = ""
         last_chunk_ts = time.monotonic()
         flush_timeout_s = 0.35
@@ -508,14 +524,32 @@ class ConversationPlugin(Plugin):
     # ── Pipeline task 3: Output pipeline (TTS + playback) ────────────
 
     async def _output_pipeline(self) -> None:
-        """Consume sentences, synthesize TTS, play with interrupt support."""
+        """Consume sentences, synthesize TTS, play with interrupt support.
+
+        Prefetches next sentence's TTS while current sentence plays,
+        eliminating inter-sentence gaps.
+        """
+        prefetch: asyncio.Task | None = None  # Task[tuple[SentenceItem, list|None]]
+
         while self._running:
-            try:
-                item = await asyncio.wait_for(
-                    self._sentence_queue.get(), timeout=1.0
-                )
-            except asyncio.TimeoutError:
-                continue
+            # Use prefetched result if available
+            item = None
+            prefetched_chunks = None
+
+            if prefetch is not None:
+                try:
+                    item, prefetched_chunks = await prefetch
+                except (asyncio.CancelledError, Exception):
+                    pass
+                prefetch = None
+
+            if item is None:
+                try:
+                    item = await asyncio.wait_for(
+                        self._sentence_queue.get(), timeout=1.0
+                    )
+                except asyncio.TimeoutError:
+                    continue
 
             if item is None:
                 continue
@@ -526,12 +560,27 @@ class ConversationPlugin(Plugin):
                 continue
 
             # Speak this sentence
+            t_speak_start = time.perf_counter()
             self.app.is_speaking = True
             self._set_state(ConvState.SPEAKING)
 
-            interrupted = await self._speak_interruptible(item.text)
+            # Start prefetching next sentence in background (runs during playback)
+            if not item.is_last:
+                prefetch = asyncio.create_task(self._prefetch_next_sentence())
+
+            interrupted = await self._speak_interruptible(
+                item.text, prefetched_chunks
+            )
+            speak_ms = (time.perf_counter() - t_speak_start) * 1000
+            logger.info(
+                f"Spoke: {len(item.text)} chars in {speak_ms:.0f}ms"
+                f"{' (interrupted)' if interrupted else ''}"
+            )
 
             if interrupted or self._interrupt_event.is_set():
+                if prefetch:
+                    prefetch.cancel()
+                    prefetch = None
                 # Drain remaining sentences
                 _drain_queue(self._sentence_queue)
                 self._interrupt_event.clear()
@@ -540,6 +589,33 @@ class ConversationPlugin(Plugin):
 
             if item.is_last:
                 await self._finish_speaking()
+
+    async def _prefetch_next_sentence(self) -> tuple:
+        """Wait for next sentence and pre-synthesize its audio."""
+        try:
+            item = await asyncio.wait_for(
+                self._sentence_queue.get(), timeout=10.0
+            )
+        except asyncio.TimeoutError:
+            return None, None
+
+        if item is None or (item.is_last and not item.text):
+            return item, None
+
+        if not item.text or not self._tts or not self._tts.supports_streaming:
+            return item, None
+
+        clean = item.text.replace("**", "").replace("*", "").replace("`", "")
+        chunks = []
+        try:
+            async for chunk, sr in self._tts.synthesize_streaming(clean):
+                chunks.append((chunk, sr))
+        except Exception as e:
+            logger.warning(f"Prefetch TTS failed: {e}")
+            return item, None
+
+        logger.info(f"Prefetched TTS: {len(clean)} chars, {len(chunks)} chunks")
+        return item, chunks if chunks else None
 
     async def _finish_speaking(self) -> None:
         """Clean up after speaking is done."""
@@ -573,7 +649,9 @@ class ConversationPlugin(Plugin):
 
     # ── TTS + interruptible playback ──────────────────────────────────
 
-    async def _speak_interruptible(self, text: str) -> bool:
+    async def _speak_interruptible(
+        self, text: str, prefetched_chunks: list | None = None
+    ) -> bool:
         """Synthesize and play one sentence. Returns True if interrupted."""
         if not text.strip():
             return False
@@ -582,14 +660,31 @@ class ConversationPlugin(Plugin):
 
         # Use streaming TTS if backend supports it
         if self._tts.supports_streaming:
-            return await self._speak_streaming_tts(clean_text)
+            return await self._speak_streaming_tts(clean_text, prefetched_chunks)
 
         return await self._speak_batch_tts(clean_text)
 
-    async def _speak_streaming_tts(self, text: str) -> bool:
+    async def _speak_streaming_tts(
+        self, text: str, prefetched_chunks: list | None = None
+    ) -> bool:
         """Stream TTS: play audio chunks as they arrive from the backend."""
         try:
-            logger.info(f"TTS stream: generating speech ({len(text)} chars)...")
+            if prefetched_chunks:
+                logger.info(
+                    f"TTS stream: playing prefetched audio ({len(text)} chars, "
+                    f"{len(prefetched_chunks)} chunks)"
+                )
+            else:
+                logger.info(f"TTS stream: generating speech ({len(text)} chars)...")
+
+            # Build chunk source: prefetched list or live stream
+            if prefetched_chunks:
+                async def _chunk_source():
+                    for item in prefetched_chunks:
+                        yield item
+                source = _chunk_source()
+            else:
+                source = self._tts.synthesize_streaming(text)
 
             if self.app.reachy and hasattr(self.app.reachy, "media"):
                 reachy = self.app.reachy
@@ -599,7 +694,7 @@ class ConversationPlugin(Plugin):
 
                 interrupted = False
                 try:
-                    async for chunk, sr in self._tts.synthesize_streaming(text):
+                    async for chunk, sr in source:
                         if self._interrupt_event.is_set():
                             interrupted = True
                             break
@@ -619,7 +714,7 @@ class ConversationPlugin(Plugin):
                 # Local playback: collect all streaming chunks, write to temp file, play
                 all_chunks = []
                 sample_rate = 16000
-                async for chunk, sr in self._tts.synthesize_streaming(text):
+                async for chunk, sr in source:
                     if self._interrupt_event.is_set():
                         return True
                     all_chunks.append(chunk)
