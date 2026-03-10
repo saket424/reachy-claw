@@ -441,7 +441,6 @@ uv run pytest
 | `src/reachy_claw/vision/` | MediaPipe face tracker |
 | `src/reachy_claw/config.py` | Configuration (YAML + env + defaults) |
 | `reachy-claw.example.yaml` | Example configuration file |
-| `deploy/jetson/` | Symlink to [Jetson Voice](https://github.com/suharvest/jetson-local-voice) edge speech service |
 | `action-skill/` | OpenClaw skill package |
 
 ## Acknowledgements
