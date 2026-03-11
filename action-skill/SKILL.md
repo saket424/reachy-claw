@@ -28,5 +28,9 @@ Execute a dance routine.
 ### `reachy_capture_image`
 Capture camera image. Returns filepath.
 
+### `reachy_set_volume`
+Set system speaker volume.
+- `level` (int): Volume percentage, 0-100. Or use relative: +10, -10.
+
 ### `reachy_status`
 Get robot connection state and current head/antenna positions.

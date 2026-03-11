@@ -352,6 +352,7 @@ class ConversationPlugin(Plugin):
             "play_emotion": self._cmd_play_emotion,
             "dance": self._cmd_dance,
             "capture_image": self._cmd_capture_image,
+            "set_volume": self._cmd_set_volume,
             "status": self._cmd_status,
         }
         handler = handlers.get(action)
@@ -451,6 +452,89 @@ class ConversationPlugin(Plugin):
             Image.fromarray(frame).save(filepath)
 
         return {"status": "success", "filepath": str(filepath)}
+
+    def _cmd_set_volume(self, params: dict) -> dict:
+        """Set system speaker volume using ALSA amixer."""
+        import shutil
+        import sys
+
+        level = params.get("level", None)
+        if level is None:
+            return {"status": "error", "message": "Missing level parameter"}
+
+        # Support relative values like "+10" or "-10"
+        level_str = str(level).strip()
+        if level_str.startswith(("+", "-")):
+            amixer_val = f"{level_str}%"
+        else:
+            try:
+                pct = max(0, min(100, int(level_str)))
+            except (ValueError, TypeError):
+                return {"status": "error", "message": f"Invalid level: {level}"}
+            amixer_val = f"{pct}%"
+
+        if sys.platform == "darwin":
+            # macOS: use osascript
+            try:
+                pct = int(level_str.lstrip("+-")) if level_str.startswith(("+", "-")) else int(level_str)
+                result = subprocess.run(
+                    ["osascript", "-e", f"set volume output volume {max(0, min(100, pct))}"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode != 0:
+                    return {"status": "error", "message": result.stderr.strip()}
+                return {"status": "success", "volume": max(0, min(100, pct))}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        # Linux (Jetson / Raspberry Pi): use amixer
+        if not shutil.which("amixer"):
+            return {"status": "error", "message": "amixer not found"}
+
+        # Try the configured audio device first, fall back to default
+        card_args: list[str] = []
+        device_name = self.app.config.audio_device
+        if device_name:
+            try:
+                import sounddevice as sd
+                for i, d in enumerate(sd.query_devices()):
+                    if device_name.lower() in d["name"].lower() and d["max_output_channels"] > 0:
+                        # Extract ALSA card number from device name
+                        # sounddevice names look like "hw:2,0" or "Reachy Mini Audio: ..."
+                        # We need the card number for amixer -c
+                        info = sd.query_devices(i)
+                        # Parse hostapi and device index to find ALSA card
+                        card_args = ["-c", str(info.get("index", i))]
+                        break
+            except Exception:
+                pass
+
+            # Alternative: parse /proc/asound/cards for the device name
+            if not card_args:
+                try:
+                    with open("/proc/asound/cards") as f:
+                        for line in f:
+                            if device_name.lower().replace(" ", "").replace("-", "") in line.lower().replace(" ", "").replace("-", ""):
+                                card_num = line.strip().split()[0]
+                                card_args = ["-c", card_num]
+                                break
+                except Exception:
+                    pass
+
+        # Try common mixer control names
+        for control in ["PCM", "Speaker", "Master", "Playback"]:
+            result = subprocess.run(
+                ["amixer", *card_args, "sset", control, amixer_val],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                # Parse current volume from output
+                import re
+                match = re.search(r"\[(\d+)%\]", result.stdout)
+                current = int(match.group(1)) if match else None
+                return {"status": "success", "volume": current, "control": control}
+
+        return {"status": "error", "message": "No suitable mixer control found"}
 
     def _cmd_status(self, params: dict) -> dict:
         reachy = self.app.reachy
