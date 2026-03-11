@@ -1,6 +1,6 @@
 # Reachy Claw
 
-**Sub-200ms voice assistant for [Reachy Mini](https://www.pollen-robotics.com/reachy-mini/) — fully local pipeline powered by [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) and [OpenClaw](https://github.com/ArturSkowronski/openclaw).**
+**Sub-200ms voice assistant for [Reachy Mini](https://www.pollen-robotics.com/reachy-mini/) — fully local pipeline powered by [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx). Two AI modes: zero-setup [Ollama](#ollama-mode-zero-setup) or full-featured [OpenClaw](#openclaw-mode-full-featured).**
 
 [![CI](https://github.com/suharvest/reachy-claw/actions/workflows/ci.yml/badge.svg)](https://github.com/suharvest/reachy-claw/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
@@ -15,7 +15,18 @@
 
 Talk to your robot, and it talks back — with emotions, head movements, and face tracking. No cloud, no subscription, everything runs on your own hardware.
 
-Reachy Claw connects [OpenClaw](https://github.com/ArturSkowronski/openclaw) (AI brain) with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (voice engine) to give a [Reachy Mini](https://www.pollen-robotics.com/reachy-mini/) desktop robot the ability to have real conversations. You speak, it listens, thinks, and responds — all in under 200ms. Works on Jetson, RK3588, or any CUDA device you have.
+Reachy Claw gives a [Reachy Mini](https://www.pollen-robotics.com/reachy-mini/) desktop robot the ability to have real conversations. You speak, it listens, thinks, and responds — all in under 200ms. Two AI backends to choose from:
+
+| | Ollama Mode | OpenClaw Mode |
+|---|---|---|
+| **Setup** | `ollama pull` + go | Requires [OpenClaw](https://github.com/ArturSkowronski/openclaw) gateway |
+| **LLM** | Any Ollama model (Qwen, Llama, Gemma...) | Any LLM via OpenClaw (Claude, GPT, Qwen...) |
+| **Tools** | Conversation only | LLM tool use — robot commands, camera, dances |
+| **Emotions** | Basic (rule-based) | Rich (LLM-driven `[emotion:*]` tags) |
+| **Multi-turn** | Configurable history depth | Full session via OpenClaw |
+| **Best for** | Quick demos, offline use, edge devices | Production, tool use, multi-agent setups |
+
+Both modes share the same speech pipeline (sherpa-onnx STT/TTS), motion system, face tracking, and barge-in. Switch with one config line.
 
 ### Latency breakdown (Jetson Orin NX, CUDA)
 
@@ -30,19 +41,21 @@ Full voice-to-voice latency depends on LLM inference time (not included above).
 
 ## Key Features
 
+- **Two AI modes** — [Ollama](#ollama-mode-zero-setup) for zero-setup local LLM, or [OpenClaw](#openclaw-mode-full-featured) for tool use and multi-agent; switch with one config line
 - **Fully local pipeline** — Paraformer ASR + Matcha TTS via sherpa-onnx, runs on Jetson / RK3588 / any CUDA device, no cloud required
-- **OpenClaw integration** — streaming LLM responses, tool use, and multi-turn conversation via [OpenClaw](https://github.com/ArturSkowronski/openclaw) gateway
 - **Emotion-driven motion** — 14 distinct emotions mapped to head movements and antenna expressions
 - **Face tracking** — MediaPipe-powered gaze following so the robot looks at whoever is speaking
 - **Streaming TTS** — sentence-level streaming for low-latency responses
-- **Barge-in support** — interrupt the robot mid-sentence, just like a real conversation
-- **Pluggable backends** — swap STT/TTS/VAD without changing code (Paraformer, Matcha, Whisper, ElevenLabs, Piper, and more)
+- **Robust barge-in** — 3-layer noise filtering (energy gate + VAD threshold + cooldown) for reliable interrupts even in noisy environments
+- **Pluggable backends** — swap STT/TTS/VAD/LLM without changing code (Paraformer, Matcha, Whisper, ElevenLabs, Ollama, OpenClaw, and more)
 - **Plugin architecture** — Motion, Conversation, and FaceTracker as independent plugins
 - **Flexible deployment** — standalone mode, simulator, direct connection, or via Reachy Mini daemon
 
 ## Table of Contents
 
 - [Quickstart](#quickstart)
+  - [Ollama Mode (zero setup)](#ollama-mode-zero-setup)
+  - [OpenClaw Mode (full featured)](#openclaw-mode-full-featured)
 - [Architecture](#architecture)
 - [Edge Speech Service](#edge-speech-service)
 - [Running as a Reachy Mini App](#running-as-a-reachy-mini-app)
@@ -61,40 +74,108 @@ Full voice-to-voice latency depends on LLM inference time (not included above).
 git clone https://github.com/suharvest/reachy-claw.git
 cd reachy-claw
 uv sync --extra dev --extra audio
-uv run reachy-claw --gateway-host 127.0.0.1
 ```
 
-With edge speech service (Jetson):
+### Ollama Mode (zero setup)
+
+No gateway needed. Just install [Ollama](https://ollama.com/), pull a model, and go:
+
+```bash
+ollama pull qwen3.5:2b        # or any model you like
+```
+
+```yaml
+# reachy-claw.yaml
+llm:
+  backend: ollama
+  model: qwen3.5:2b
+```
+
+```bash
+uv run reachy-claw
+```
+
+That's it — the robot talks using a local LLM. No cloud, no gateway, no extra services.
+
+Want a bigger model? Just change the model name:
+
+```yaml
+llm:
+  model: llama3.2:3b       # English-focused
+  model: qwen3.5:8b        # bigger, smarter, bilingual
+  model: gemma3:4b          # Google's compact model
+```
+
+Ollama mode supports configurable conversation history and custom system prompts:
+
+```yaml
+llm:
+  backend: ollama
+  model: qwen3.5:2b
+  max_history: 5             # remember last 5 turns (0 = stateless)
+  system_prompt: "You are a friendly robot assistant. Keep answers short."
+  temperature: 0.7
+```
+
+### OpenClaw Mode (full featured)
+
+For tool use, LLM-driven emotions, and multi-agent capabilities, use [OpenClaw](https://github.com/ArturSkowronski/openclaw) as the AI backend:
+
+```yaml
+# reachy-claw.yaml
+llm:
+  backend: gateway           # this is the default
+
+gateway:
+  host: 127.0.0.1
+  port: 18790
+```
+
+```bash
+# Start OpenClaw gateway first (separate terminal)
+cd /path/to/openclaw && node scripts/run-node.mjs gateway
+
+# Then start reachy-claw
+uv run reachy-claw
+```
+
+OpenClaw unlocks features that Ollama mode can't do:
+- **Robot tool use** — the LLM can command head movements, dances, camera capture
+- **Rich emotions** — `[emotion:happy]` tags in LLM output drive head+antenna expressions
+- **Multi-turn sessions** — full conversation context managed by OpenClaw
+- **Multi-agent** — connect multiple robots or services to the same gateway
+
+### With Edge Speech Service (Jetson)
+
+Both modes work with the [Jetson Voice](https://github.com/suharvest/jetson-local-voice) speech service for low-latency STT/TTS:
 
 ```bash
 uv run reachy-claw \
   --stt paraformer-streaming \
   --tts matcha \
-  --speech-url http://<jetson-ip>:8000
+  --speech-url http://<jetson-ip>:8621
 ```
 
-Standalone mode (no gateway, echoes what it heard):
+### Other modes
 
 ```bash
+# Standalone mode (no LLM, echoes what it heard — for testing audio pipeline)
 uv run reachy-claw --standalone
-```
 
-Robot demo mode:
-
-```bash
+# Robot demo mode (movement demo, no conversation)
 uv run reachy-claw --demo
 ```
 
 ## Architecture
 
-Reachy Claw is the client-side runtime that sits between three services:
+Reachy Claw is the client-side runtime. The AI backend is swappable — Ollama or OpenClaw:
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │  reachy-claw (this project)                                         │
 │                                                                     │
 │  Plugins:                                                          │
-│    ConversationPlugin — mic → VAD → STT → Gateway → TTS → speaker │
+│    ConversationPlugin — mic → VAD → STT → [LLM] → TTS → speaker  │
 │    MotionPlugin       — emotions, head tracking, idle animations    │
 │    FaceTrackerPlugin  — MediaPipe face detection → head gaze        │
 │                                                                     │
@@ -102,19 +183,23 @@ Reachy Claw is the client-side runtime that sits between three services:
 │    HeadTargetBus  — fuses face/DOA/neutral head targets             │
 │    EmotionMapper  — 14 emotions → head+antenna poses                │
 │    HeadWobbler    — speech-driven head micro-movements              │
-└──────┬──────────────────┬───────────────────────┬───────────────────┘
-       │                  │                       │
-       ▼                  ▼                       ▼
- Reachy Mini SDK    Speech Service          OpenClaw Gateway
- (reachy-mini)      (jetson-local-voice)    (openclaw + desktop-robot)
+└──────┬──────────────────┬───────────────┬────────────┬──────────────┘
+       │                  │               │            │
+       ▼                  ▼               ▼            ▼
+ Reachy Mini SDK    Speech Service    Ollama        OpenClaw Gateway
+ (reachy-mini)      (jetson-voice)    (local LLM)   (openclaw)
+                                      ─── OR ───
 ```
+
+The `[LLM]` block in the pipeline is a pluggable interface: `OllamaClient` calls Ollama's HTTP API directly; `DesktopRobotClient` connects to OpenClaw via WebSocket. Both implement the same streaming response protocol, so the rest of the pipeline (STT, TTS, motion, barge-in) works identically.
 
 ### Related Projects
 
 | Project | Role | Default Port | Protocol |
 |---------|------|-------------|----------|
 | **[reachy-claw](https://github.com/suharvest/reachy-claw)** (this) | Client runtime — plugins, STT/TTS pipeline, robot control | — | — |
-| **[OpenClaw](https://github.com/ArturSkowronski/openclaw)** | AI gateway — LLM, tools, multi-turn conversation | `:18789` (gateway) | HTTP |
+| **[Ollama](https://ollama.com/)** | Local LLM inference (optional, for Ollama mode) | `:11434` | HTTP |
+| **[OpenClaw](https://github.com/ArturSkowronski/openclaw)** | AI gateway — LLM, tools, multi-turn conversation (optional, for OpenClaw mode) | `:18789` (gateway) | HTTP |
 | ↳ desktop-robot extension | WebSocket bridge for voice assistants | `:18790` | `ws://.../desktop-robot` |
 | **[Jetson Voice](https://github.com/suharvest/jetson-local-voice)** | Edge speech — Paraformer ASR + Matcha TTS (sherpa-onnx, CUDA) | `:8621` | HTTP REST |
 | **reachy-mini daemon** | Robot hardware — SDK access, motor control | `:8000` (dev) / `:38001` (Jetson) | Zenoh `:7447` |
@@ -123,7 +208,7 @@ Reachy Claw is the client-side runtime that sits between three services:
 
 | Plugin | Purpose | Depends on |
 |--------|---------|------------|
-| `ConversationPlugin` | Full conversation loop: mic → VAD → STT → OpenClaw → TTS → speaker. Handles barge-in, emotion channel, and robot commands from LLM. | OpenClaw gateway, Speech service |
+| `ConversationPlugin` | Full conversation loop: mic → VAD → STT → LLM (Ollama or OpenClaw) → TTS → speaker. Handles barge-in, emotions, and robot commands. | Ollama or OpenClaw, Speech service |
 | `MotionPlugin` | Executes emotion expressions (head + antenna), fused head tracking, idle animations. | Reachy Mini SDK |
 | `FaceTrackerPlugin` | MediaPipe face detection → HeadTarget published to HeadTargetBus. | Camera |
 
@@ -155,26 +240,44 @@ Available actions: `move_head`, `move_antennas`, `play_emotion`, `dance`, `captu
 ```text
 Microphone → VAD (Silero) → Speech detected?
   → STT (Paraformer streaming) → text
-  → OpenClaw Gateway (WebSocket) → AI response (streaming)
+  → LLM (Ollama HTTP or OpenClaw WebSocket) → AI response (streaming)
   → Sentence splitter → TTS (Matcha, streaming) → Speaker
                        → EmotionMapper → Robot head/antennas
 
 Camera → MediaPipe → HeadTarget → HeadTargetBus → Robot head
 TTS audio → HeadWobbler → speech roll/pitch/yaw → Robot head
 
-Barge-in: VAD detects speech during playback → interrupt TTS → new turn
+Barge-in: energy gate → VAD probability → confirm frames → interrupt TTS → new turn
 ```
 
 ### Jetson Deployment (Docker Compose)
 
-On Jetson, all services run as containers with `network_mode: host`:
+On Jetson, all services run as containers with `network_mode: host`. A single `docker-compose.yml` manages everything — OpenClaw is an opt-in profile:
 
-| Container | Image | Ports |
-|-----------|-------|-------|
-| `reachy-daemon` | `Dockerfile.daemon` | `:38001` (FastAPI), `:7447` (Zenoh) |
-| `reachy-claw` | `Dockerfile.reachy-claw` | — (connects to others) |
-| `openclaw-gateway` | (separate) | `:18789`, `:18790` |
-| `speech` | (jetson-local-voice) | `:8621` |
+```bash
+# Ollama mode (default — 2 containers)
+docker compose up -d
+
+# OpenClaw mode (3 containers)
+docker compose --profile openclaw up -d
+```
+
+| Container | Always | OpenClaw only | Ports |
+|-----------|--------|---------------|-------|
+| `reachy-daemon` | yes | | `:38001` (FastAPI), `:7447` (Zenoh) |
+| `reachy-claw` | yes | | — (connects to others) |
+| `openclaw-gateway` | | yes | `:18789`, `:18790` |
+| `speech` (external) | yes | | `:8621` |
+
+One-click deploy from your laptop:
+
+```bash
+cd deploy/jetson
+
+./deploy.sh                    # Ollama mode
+./deploy.sh --openclaw         # OpenClaw mode
+./deploy.sh --setup-openclaw   # OpenClaw + first-time extension setup
+```
 
 See `deploy/jetson/` for Dockerfiles and compose config.
 
@@ -268,16 +371,35 @@ reachy-claw --config /path/to/config.yaml
 export REACHY_CLAW_CONFIG=/path/to/config.yaml
 ```
 
-Example `reachy-claw.yaml` (edge deployment with Jetson):
+Example: **Ollama mode** (simplest — no gateway needed):
 
 ```yaml
+llm:
+  backend: ollama
+  model: qwen3.5:2b
+  max_history: 5
+
+vad:
+  backend: silero
+```
+
+Example: **OpenClaw mode** (full features, edge deployment with Jetson):
+
+```yaml
+llm:
+  backend: gateway             # default — use OpenClaw
+
+gateway:
+  host: 192.168.1.100
+  port: 18790
+
 stt:
   backend: paraformer-streaming
-  speech_service_url: http://192.168.1.50:8000
+  speech_service_url: http://192.168.1.50:8621
 
 tts:
   backend: matcha
-  speech_service_url: http://192.168.1.50:8000
+  speech_service_url: http://192.168.1.50:8621
   matcha:
     speaker_id: 0
     speed: 1.2
@@ -475,6 +597,7 @@ uv tool run ruff check .
 | `src/reachy_claw/app.py` | ReachyClawApp orchestrator |
 | `src/reachy_claw/reachy_app.py` | Reachy Mini daemon app adapter |
 | `src/reachy_claw/gateway.py` | OpenClaw WebSocket protocol (emotion + robot_command channels) |
+| `src/reachy_claw/llm.py` | Ollama LLM client (HTTP streaming, conversation history) |
 | `src/reachy_claw/plugins/conversation_plugin.py` | Conversation loop + robot command handlers |
 | `src/reachy_claw/plugins/motion_plugin.py` | Emotion execution + head tracking fusion |
 | `src/reachy_claw/plugins/face_tracker_plugin.py` | MediaPipe face detection → HeadTarget |

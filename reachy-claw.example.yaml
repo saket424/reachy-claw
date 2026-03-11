@@ -1,12 +1,25 @@
-# Clawd Reachy Mini Configuration
+# Reachy Claw Configuration
 # Copy to one of these locations:
 #   ./reachy-claw.yaml                           (project directory)
 #   ~/.reachy-claw/config.yaml       (user home)
 # Or specify explicitly: reachy-claw --config /path/to/config.yaml
-# Environment variable: CLAWD_CONFIG=/path/to/config.yaml
+# Environment variable: REACHY_CLAW_CONFIG=/path/to/config.yaml
 #
 # Priority: CLI args > environment variables > this file > defaults
 
+# ── AI Backend ─────────────────────────────────────────────────────
+# Choose one: "ollama" (local LLM, zero setup) or "gateway" (OpenClaw)
+llm:
+  backend: gateway               # "gateway" (default) or "ollama"
+
+  # Ollama settings (only used when backend: ollama)
+  # model: qwen3.5:2b            # any Ollama model
+  # base_url: http://localhost:11434
+  # max_history: 0               # conversation turns to keep (0 = stateless)
+  # system_prompt: ""            # custom system prompt (empty = default)
+  # temperature: 0.7
+
+# OpenClaw gateway settings (only used when backend: gateway)
 gateway:
   host: 127.0.0.1
   port: 18790
@@ -41,7 +54,10 @@ audio:
 
 barge_in:
   enabled: true
-  energy_threshold: 0.02
+  energy_threshold: 0.02         # min audio energy to consider (filters background noise)
+  confirm_frames: 3              # consecutive frames before interrupt (~200ms)
+  silero_threshold: 0.6          # stricter VAD threshold during playback
+  cooldown_ms: 500               # ignore barge-in for N ms after TTS starts
 
 behavior:
   # wake_word: hey reachy
