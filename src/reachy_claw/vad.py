@@ -31,10 +31,10 @@ class VADBackend(ABC):
 
 @register_vad("silero")
 class SileroVAD(VADBackend):
-    """Silero VAD using the official silero-vad package.
+    """Silero VAD using pure onnxruntime — no PyTorch dependency.
 
-    Uses the ONNX backend via silero_vad.load_silero_vad(onnx=True).
-    Handles state management internally.
+    Loads the ONNX model from the silero_vad package data directory
+    and runs inference with numpy arrays directly.
     """
 
     class Settings:
@@ -42,24 +42,86 @@ class SileroVAD(VADBackend):
 
     def __init__(self, threshold: float = 0.5):
         self._threshold = threshold
-        self._model = None
+        self._session = None
+        self._state: np.ndarray | None = None
+        self._context: np.ndarray | None = None
+        self._last_sr = 0
 
     def preload(self) -> None:
         self._load_model()
 
+    def _find_onnx_model(self) -> str:
+        """Locate silero_vad.onnx from the silero_vad package."""
+        import importlib.resources
+
+        try:
+            ref = importlib.resources.files("silero_vad") / "data" / "silero_vad.onnx"
+            with importlib.resources.as_file(ref) as p:
+                return str(p)
+        except Exception:
+            pass
+
+        # Fallback: search site-packages
+        import site
+
+        for sp in site.getsitepackages() + [site.getusersitepackages()]:
+            candidate = f"{sp}/silero_vad/data/silero_vad.onnx"
+            import os
+
+            if os.path.isfile(candidate):
+                return candidate
+
+        raise FileNotFoundError(
+            "silero_vad.onnx not found. Install: pip install silero-vad"
+        )
+
     def _load_model(self):
-        if self._model is not None:
+        if self._session is not None:
             return
 
-        from silero_vad import load_silero_vad
+        import onnxruntime
 
-        logger.info("Loading Silero VAD (onnxruntime)...")
-        self._model = load_silero_vad(onnx=True)
+        logger.info("Loading Silero VAD (onnxruntime, no PyTorch)...")
+        opts = onnxruntime.SessionOptions()
+        opts.inter_op_num_threads = 1
+        opts.intra_op_num_threads = 1
+        path = self._find_onnx_model()
+        self._session = onnxruntime.InferenceSession(
+            path, providers=["CPUExecutionProvider"], sess_options=opts
+        )
+        self._reset_states()
         logger.info("Silero VAD ready")
 
-    def is_speech(self, audio: np.ndarray, sample_rate: int = 16000) -> bool:
-        import torch
+    def _reset_states(self):
+        self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._context = np.zeros((1, 0), dtype=np.float32)
+        self._last_sr = 0
 
+    def _infer(self, x: np.ndarray, sr: int) -> float:
+        """Run one 512-sample chunk through the ONNX model. Returns speech probability."""
+        # x shape: (1, 512)
+        context_size = 64 if sr == 16000 else 32
+
+        if self._context.shape[1] == 0:
+            self._context = np.zeros((1, context_size), dtype=np.float32)
+
+        # Prepend context
+        x_with_ctx = np.concatenate([self._context, x], axis=1)
+
+        ort_inputs = {
+            "input": x_with_ctx,
+            "state": self._state,
+            "sr": np.array(sr, dtype=np.int64),
+        }
+        out, state = self._session.run(None, ort_inputs)
+
+        self._state = state
+        self._context = x_with_ctx[:, -context_size:]
+        self._last_sr = sr
+
+        return float(out[0, 0])
+
+    def is_speech(self, audio: np.ndarray, sample_rate: int = 16000) -> bool:
         self._load_model()
 
         if audio.dtype != np.float32:
@@ -69,6 +131,10 @@ class SileroVAD(VADBackend):
         if np.abs(audio).max() > 1.0:
             audio = audio / 32768.0
 
+        # Reset state if sample rate changed
+        if self._last_sr and self._last_sr != sample_rate:
+            self._reset_states()
+
         # Process in 512-sample chunks (required by Silero VAD at 16kHz)
         chunk_size = 512
         for i in range(0, len(audio), chunk_size):
@@ -76,16 +142,17 @@ class SileroVAD(VADBackend):
             if len(chunk) < chunk_size:
                 chunk = np.pad(chunk, (0, chunk_size - len(chunk)))
 
-            tensor = torch.from_numpy(chunk)
-            prob = self._model(tensor, sample_rate).item()
+            # Shape: (1, 512) — batch dim required by ONNX model
+            chunk_2d = chunk.reshape(1, -1)
+            prob = self._infer(chunk_2d, sample_rate)
 
             if prob > self._threshold:
                 return True
         return False
 
     def reset(self) -> None:
-        if self._model is not None:
-            self._model.reset_states()
+        if self._session is not None:
+            self._reset_states()
 
     @property
     def threshold(self) -> float:

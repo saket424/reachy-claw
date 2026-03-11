@@ -3376,7 +3376,6 @@ dependencies = [
     { name = "httpx" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "openai-whisper" },
     { name = "pyyaml" },
     { name = "reachy-mini" },
     { name = "websockets" },
@@ -3395,6 +3394,7 @@ dev = [
 ]
 local-stt = [
     { name = "faster-whisper" },
+    { name = "openai-whisper" },
 ]
 mediapipe-vision = [
     { name = "mediapipe" },
@@ -3417,7 +3417,7 @@ requires-dist = [
     { name = "mediapipe", marker = "extra == 'mediapipe-vision'", specifier = ">=0.10.14" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "openai", marker = "extra == 'cloud-stt'", specifier = ">=1.0" },
-    { name = "openai-whisper", specifier = ">=20231117" },
+    { name = "openai-whisper", marker = "extra == 'local-stt'", specifier = ">=20231117" },
     { name = "opencv-python", marker = "extra == 'mediapipe-vision'", specifier = ">=4.8" },
     { name = "piper-tts", marker = "extra == 'piper-tts'", specifier = ">=1.2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
