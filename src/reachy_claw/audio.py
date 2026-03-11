@@ -39,14 +39,24 @@ class AudioCapture:
             self._device_id = self._find_device(config.audio_device)
 
     def _find_device(self, device_name: str) -> int | None:
-        """Find audio device by name."""
+        """Find audio device by name and set as default for both input and output."""
         try:
             import sounddevice as sd
             devices = sd.query_devices()
+            input_id = None
+            output_id = None
             for i, d in enumerate(devices):
-                if device_name.lower() in d['name'].lower() and d['max_input_channels'] > 0:
-                    logger.info(f"🎙️ Using audio device: {d['name']} (index {i})")
-                    return i
+                if device_name.lower() in d['name'].lower():
+                    if d['max_input_channels'] > 0 and input_id is None:
+                        input_id = i
+                    if d['max_output_channels'] > 0 and output_id is None:
+                        output_id = i
+            if input_id is not None:
+                logger.info(f"Using audio input: {devices[input_id]['name']} (index {input_id})")
+                if output_id is not None:
+                    logger.info(f"Using audio output: {devices[output_id]['name']} (index {output_id})")
+                    sd.default.device = (input_id, output_id)
+                return input_id
             logger.warning(f"Audio device '{device_name}' not found, using default")
             return None
         except Exception as e:
