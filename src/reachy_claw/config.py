@@ -64,6 +64,7 @@ class Config:
 
     # Audio settings
     audio_device: str | None = None
+    audio_volume: float = 1.0  # playback gain multiplier (e.g. 2.0 = double volume)
     sample_rate: int = 16000
     silence_threshold: float = 0.01
     silence_duration: float = 0.7
@@ -77,6 +78,14 @@ class Config:
     barge_in_enabled: bool = True
     barge_in_energy_threshold: float = 0.02
     barge_in_confirm_frames: int = 3  # consecutive VAD-positive frames before interrupt (~200ms)
+
+    # LLM backend (local Ollama, replaces gateway when set)
+    llm_backend: str = "gateway"  # "gateway" (OpenClaw) or "ollama"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen3.5:0.8b"
+    ollama_system_prompt: str = ""  # empty = use default
+    ollama_temperature: float = 0.7
+    ollama_max_history: int = 0  # conversation turns to keep (0 = stateless)
 
     # Behavior
     wake_word: str | None = None
@@ -158,6 +167,7 @@ _YAML_FIELD_MAP: dict[tuple[str, str], str] = {
     ("vad", "backend"): "vad_backend",
     ("vad", "threshold"): "silero_threshold",
     ("audio", "device"): "audio_device",
+    ("audio", "volume"): "audio_volume",
     ("audio", "sample_rate"): "sample_rate",
     ("audio", "silence_threshold"): "silence_threshold",
     ("audio", "silence_duration"): "silence_duration",
@@ -171,6 +181,12 @@ _YAML_FIELD_MAP: dict[tuple[str, str], str] = {
     ("behavior", "play_emotions"): "play_emotions",
     ("behavior", "idle_animations"): "idle_animations",
     ("behavior", "standalone_mode"): "standalone_mode",
+    ("llm", "backend"): "llm_backend",
+    ("llm", "model"): "ollama_model",
+    ("llm", "base_url"): "ollama_base_url",
+    ("llm", "system_prompt"): "ollama_system_prompt",
+    ("llm", "temperature"): "ollama_temperature",
+    ("llm", "max_history"): "ollama_max_history",
     ("motion", "emotion_intensity"): "motion_emotion_intensity",
     ("motion", "head_tracking_smoothing"): "motion_head_tracking_smoothing",
     ("motion", "head_tracking_poll_interval"): "motion_head_tracking_poll_interval",

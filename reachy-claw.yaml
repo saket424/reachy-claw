@@ -19,3 +19,15 @@ tts:
 vad:
   backend: silero  # "silero" (onnxruntime, CPU) or "energy" (simple threshold)
 
+llm:
+  backend: ollama  # "ollama" (local) or "gateway" (OpenClaw)
+  model: qwen3.5:0.8b
+  base_url: http://localhost:11434
+  # system_prompt: "custom prompt here"  # optional
+  # temperature: 0.7
+  # max_history: 0  # conversation turns to keep (0 = stateless)
+
+reachy:
+  serialport: /dev/cu.wchusbserial5B420748751
+  spawn_daemon: false
+

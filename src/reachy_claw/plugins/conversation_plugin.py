@@ -22,6 +22,7 @@ import numpy as np
 
 from ..audio import AudioCapture, WakeWordDetector
 from ..gateway import DesktopRobotClient
+from ..llm import OllamaClient, OllamaConfig
 from ..motion.head_wobbler import HeadWobbler
 from ..plugin import Plugin
 from ..stt import create_stt_backend
@@ -63,7 +64,7 @@ class ConversationPlugin(Plugin):
 
     def __init__(self, app):
         super().__init__(app)
-        self._client: DesktopRobotClient | None = None
+        self._client: DesktopRobotClient | OllamaClient | None = None
         self._stt = None
         self._tts = None
         self._vad = None
@@ -126,11 +127,29 @@ class ConversationPlugin(Plugin):
             if config.standalone_mode:
                 logger.info("Running in standalone mode - no server connection")
                 return
-            self._client = DesktopRobotClient(config)
-            await self._client.connect()
-            self._setup_callbacks()
-            if config.gateway_warmup:
-                await self._client.warmup_session()
+
+            if config.llm_backend == "ollama":
+                from ..llm import DEFAULT_SYSTEM_PROMPT
+
+                ollama_cfg = OllamaConfig(
+                    base_url=config.ollama_base_url,
+                    model=config.ollama_model,
+                    system_prompt=config.ollama_system_prompt or DEFAULT_SYSTEM_PROMPT,
+                    temperature=config.ollama_temperature,
+                    max_history=config.ollama_max_history,
+                )
+                self._client = OllamaClient(ollama_cfg)
+                await self._client.connect()
+                self._setup_callbacks()
+                if config.gateway_warmup:
+                    await self._client.warmup_session()
+                logger.info(f"Using Ollama LLM: {config.ollama_model}")
+            else:
+                self._client = DesktopRobotClient(config)
+                await self._client.connect()
+                self._setup_callbacks()
+                if config.gateway_warmup:
+                    await self._client.warmup_session()
 
         async def _init_tts():
             logger.info(f"TTS backend: {config.tts_backend}")
@@ -1220,12 +1239,49 @@ class ConversationPlugin(Plugin):
         try:
             import sounddevice as sd
 
+            # Find the configured audio device for output
+            out_device = None
+            device_name = self.app.config.audio_device
+            if device_name:
+                for i, d in enumerate(sd.query_devices()):
+                    if device_name.lower() in d["name"].lower() and d["max_output_channels"] > 0:
+                        out_device = i
+                        break
+
+            # Resample to device rate if needed (Reachy Mini Audio = 16000Hz only)
+            play_audio = audio
+            play_rate = sample_rate
+            if out_device is not None:
+                dev_info = sd.query_devices(out_device)
+                # Reachy Mini Audio only supports 16000Hz but ALSA may
+                # report 44100/48000 as default_samplerate.  Force 16000
+                # when we matched the Reachy device by name.
+                dev_rate = int(dev_info["default_samplerate"])
+                if device_name and "reachy" in device_name.lower():
+                    dev_rate = 16000
+                if dev_rate != sample_rate:
+                    # Simple linear resample
+                    ratio = dev_rate / sample_rate
+                    n_out = int(len(audio) * ratio)
+                    indices = np.linspace(0, len(audio) - 1, n_out)
+                    play_audio = np.interp(indices, np.arange(len(audio)), audio).astype(np.float32)
+                    play_rate = dev_rate
+
+                # Reachy Mini Audio needs stereo
+                if dev_info["max_output_channels"] >= 2 and play_audio.ndim == 1:
+                    play_audio = np.column_stack([play_audio, play_audio])
+
+            # Apply volume gain
+            vol = self.app.config.audio_volume
+            if vol != 1.0:
+                play_audio = np.clip(play_audio * vol, -1.0, 1.0).astype(np.float32)
+
             finished = asyncio.Event()
             play_error: list[Exception] = []
 
             def _play_blocking():
                 try:
-                    sd.play(audio, samplerate=sample_rate, blocking=True)
+                    sd.play(play_audio, samplerate=play_rate, device=out_device, blocking=True)
                 except Exception as e:
                     play_error.append(e)
                 finally:
@@ -1337,7 +1393,7 @@ _EMOJI_RE = re.compile(
 )
 
 
-_EMOTION_TAG_RE = re.compile(r"\[emotion:\w+\]\s*")
+_EMOTION_TAG_RE = re.compile(r"\[(?:emotion:)?\w+\]\s*")
 
 
 def _strip_for_tts(text: str) -> str:

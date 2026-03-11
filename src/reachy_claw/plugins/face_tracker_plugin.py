@@ -8,6 +8,7 @@ import asyncio
 import logging
 import time
 
+
 from ..motion.head_target import HeadTarget
 from ..plugin import Plugin
 
@@ -41,18 +42,15 @@ class FaceTrackerPlugin(Plugin):
         self._last_face_time = 0.0
 
     def _has_sdk_camera(self) -> bool:
-        """Check if the Reachy SDK camera is available via zenoh."""
+        """Check if the Reachy SDK camera is available."""
         reachy = self.app.reachy
         if reachy is None:
             return False
-        media = getattr(reachy, "media", None)
+        media = getattr(reachy, "media_manager", None)
         if media is None:
             return False
-        try:
-            frame = media.get_frame()
-            return frame is not None
-        except Exception:
-            return False
+        # Check if camera object was initialized (pipeline may not have frames yet)
+        return getattr(media, "camera", None) is not None
 
     def setup(self) -> bool:
         """Check camera and tracker availability."""
@@ -89,7 +87,7 @@ class FaceTrackerPlugin(Plugin):
         try:
             import cv2
 
-            cap = cv2.VideoCapture(self._camera_index)
+            cap = self._open_cv_camera(cv2)
             if not cap.isOpened():
                 cap.release()
                 logger.info(
@@ -103,13 +101,26 @@ class FaceTrackerPlugin(Plugin):
 
         return True
 
+    def _open_cv_camera(self, cv2):
+        """Open camera with best available backend (FFMPEG fallback for ARM64)."""
+        cap = cv2.VideoCapture(self._camera_index)
+        if cap.isOpened():
+            return cap
+        cap.release()
+        # V4L2 backend may not be compiled in (e.g. ARM64 pip wheels) — try FFMPEG
+        dev_path = f"/dev/video{self._camera_index}"
+        cap = cv2.VideoCapture(dev_path, cv2.CAP_FFMPEG)
+        if cap.isOpened():
+            logger.info(f"Opened camera via FFMPEG backend: {dev_path}")
+        return cap
+
     async def start(self):
         from ..vision.head_tracker import create_head_tracker
 
         if not self._use_sdk_camera:
             import cv2
 
-            self._cap = cv2.VideoCapture(self._camera_index)
+            self._cap = self._open_cv_camera(cv2)
             if not self._cap.isOpened():
                 logger.error("Failed to open camera for face tracking")
                 return

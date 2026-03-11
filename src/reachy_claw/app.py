@@ -34,6 +34,72 @@ class ReachyClawApp:
 
         self._plugins: List[Plugin] = []
 
+    @staticmethod
+    def _patch_gstreamer_camera() -> None:
+        """Patch SDK for Docker: fix camera discovery and skip audio init.
+
+        Two issues when running in a container without PipeWire:
+        1. DeviceMonitor uses ``device.path`` instead of ``api.v4l2.path``
+        2. GStreamer audio pipeline grabs the ALSA device, blocking our own audio
+        """
+        try:
+            from reachy_mini.media.camera_gstreamer import GStreamerCamera
+            from reachy_mini.media.media_manager import MediaManager
+        except Exception:
+            return
+
+        # Patch: skip SDK audio init on non-Linux (macOS etc.) where
+        # GStreamer audio grabs the ALSA device, blocking our own audio.
+        # On Linux (Jetson), keep SDK audio so Reachy speaker works.
+        import sys
+        if sys.platform != "linux":
+            MediaManager._init_audio = lambda self, *a, **kw: None
+            logger.debug("Patched SDK MediaManager: audio init disabled")
+        else:
+            logger.debug("Keeping SDK audio init (Linux)")
+
+        _orig = GStreamerCamera.get_video_device
+
+        def _patched(self):
+            result = _orig(self)
+            # If the original found a valid path, use it
+            if result[0]:
+                return result
+
+            # Retry with native GStreamer field name
+            try:
+                from gi.repository import Gst
+                from typing import cast
+                from reachy_mini.media.camera_constants import (
+                    CameraSpecs,
+                    ReachyMiniLiteCamSpecs,
+                )
+
+                # Gst.init already called by SDK at this point
+                monitor = Gst.DeviceMonitor()
+                monitor.add_filter("Video/Source")
+                monitor.start()
+                try:
+                    for device in monitor.get_devices():
+                        name = device.get_display_name()
+                        props = device.get_properties()
+                        if props and "Reachy" in name:
+                            for field in ("device.path", "object.path"):
+                                if props.has_field(field):
+                                    path = props.get_string(field)
+                                    logger.info(
+                                        "GStreamer camera found via %s: %s", field, path
+                                    )
+                                    return str(path), cast(CameraSpecs, ReachyMiniLiteCamSpecs)
+                finally:
+                    monitor.stop()
+            except Exception as e:
+                logger.debug("GStreamer camera patch failed: %s", e)
+
+            return result
+
+        GStreamerCamera.get_video_device = _patched
+
     def connect_robot(self) -> None:
         """Connect to the Reachy Mini robot."""
         try:
@@ -42,6 +108,8 @@ class ReachyClawApp:
             logger.warning("reachy-mini not installed, running without robot")
             self.reachy = None
             return
+
+        self._patch_gstreamer_camera()
 
         kwargs = {}
         if self.config.reachy_connection_mode != "auto":

@@ -1,0 +1,40 @@
+llm:
+  backend: ollama
+  model: qwen3.5:2b-q4_K_M
+  base_url: http://localhost:11434
+  # max_history: 5
+
+stt:
+  backend: paraformer-streaming
+  speech_service_url: http://localhost:8621
+
+tts:
+  backend: matcha
+  speech_service_url: http://localhost:8621
+  matcha:
+    speaker_id: 0
+    speed: 1.2
+
+vad:
+  backend: silero
+
+barge_in:
+  confirm_frames: 15
+
+audio:
+  device: "Reachy Mini Audio"
+  volume: 5.0
+
+reachy:
+  serialport: auto
+  spawn_daemon: false  # daemon runs as separate container
+  connection_mode: localhost_only
+  daemon_port: 38001
+  media_backend: no_media
+
+vision:
+  camera_source: opencv
+  tracker: none
+
+plugins:
+  face_tracker: false

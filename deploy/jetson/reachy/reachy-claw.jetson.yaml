@@ -1,0 +1,33 @@
+stt:
+  backend: paraformer-streaming
+  speech_service_url: http://localhost:8621
+
+tts:
+  backend: matcha
+  speech_service_url: http://localhost:8621
+  matcha:
+    speaker_id: 0
+    speed: 1.2
+
+vad:
+  backend: silero
+
+barge_in:
+  confirm_frames: 8  # ~500ms, avoid false triggers from noise
+
+audio:
+  device: "Reachy Mini Audio"
+
+reachy:
+  serialport: auto
+  spawn_daemon: false  # daemon runs as separate container
+  connection_mode: localhost_only
+  daemon_port: 38001
+  media_backend: no_media  # audio via USB ALSA, camera via OpenCV
+
+vision:
+  camera_source: opencv  # direct V4L2 access
+  tracker: mediapipe
+
+plugins:
+  face_tracker: true

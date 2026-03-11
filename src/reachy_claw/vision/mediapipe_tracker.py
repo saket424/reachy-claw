@@ -43,7 +43,7 @@ class MediaPipeTracker(HeadTracker):
         self, img: NDArray[np.uint8]
     ) -> Tuple[Optional[NDArray[np.float32]], Optional[float]]:
         try:
-            rgb_img = img[:, :, ::-1]
+            rgb_img = np.ascontiguousarray(img[:, :, ::-1])
             results = self.face_detection.process(rgb_img)
 
             if not results.detections:

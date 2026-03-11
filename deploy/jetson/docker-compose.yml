@@ -1,0 +1,29 @@
+services:
+  reachy-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile.daemon
+    container_name: reachy-daemon
+    restart: unless-stopped
+    network_mode: host
+    privileged: true
+    command: ["reachy-mini-daemon", "--serialport", "${SERIAL_PORT:-auto}", "--localhost-only", "--deactivate-audio", "--fastapi-port", "38001"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:38001/', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  reachy-claw:
+    build:
+      context: ../..
+      dockerfile: deploy/jetson/Dockerfile.reachy-claw
+    container_name: reachy-claw
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./reachy-claw.jetson.yaml:/app/reachy-claw.yaml:ro
+    depends_on:
+      reachy-daemon:
+        condition: service_healthy

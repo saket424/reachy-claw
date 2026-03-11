@@ -1,0 +1,55 @@
+# Multi-stage build: compile native deps in builder, copy to slim runtime
+# No PyTorch — silero VAD runs via pure onnxruntime (~130MB vs ~900MB)
+
+# ── Builder ──────────────────────────────────────────────────────────
+FROM python:3.12-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential meson pkg-config \
+    libcairo2-dev libgirepository1.0-dev gobject-introspection \
+    portaudio19-dev libasound2-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+
+RUN pip install --no-cache-dir --prefix=/install onnxruntime
+RUN pip install --no-cache-dir --prefix=/install -e ".[audio,mediapipe-vision]"
+
+# Install silero-vad WITHOUT torch — only need the Python wrapper + ONNX model
+RUN pip install --no-cache-dir --prefix=/install silero-vad --no-deps
+
+# Purge heavy transitive deps not needed at runtime:
+# - torch/torchaudio (silero-vad dep, replaced by pure onnxruntime)
+# - jaxlib/jax (mediapipe dep, only needed for training)
+# - matplotlib/fontTools/pillow (mediapipe dep, only for visualization)
+# Note: scipy is needed by reachy-mini SDK (scipy.spatial.transform.Rotation)
+RUN rm -rf /install/lib/python3.12/site-packages/torch* \
+           /install/lib/python3.12/site-packages/nvidia* \
+           /install/lib/python3.12/site-packages/triton* \
+           /install/lib/python3.12/site-packages/sympy* \
+           /install/lib/python3.12/site-packages/mpmath* \
+           /install/lib/python3.12/site-packages/jax* \
+           /install/lib/python3.12/site-packages/ml_dtypes* \
+           /install/lib/python3.12/site-packages/opt_einsum* \
+           /install/lib/python3.12/site-packages/pip*
+
+# ── Runtime ──────────────────────────────────────────────────────────
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libcairo2 libgirepository-1.0-1 gir1.2-glib-2.0 \
+    libportaudio2 ffmpeg libasound2 \
+    libgl1 libglib2.0-0 \
+    gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+    gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy installed packages from builder
+COPY --from=builder /install /usr/local
+COPY --from=builder /build /app
+
+WORKDIR /app
+RUN pip install --no-cache-dir --no-deps -e .
+
+CMD ["reachy-claw", "-v"]
