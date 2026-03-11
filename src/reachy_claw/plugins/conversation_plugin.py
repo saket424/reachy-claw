@@ -1337,10 +1337,14 @@ _EMOJI_RE = re.compile(
 )
 
 
+_EMOTION_TAG_RE = re.compile(r"\[emotion:\w+\]\s*")
+
+
 def _strip_for_tts(text: str) -> str:
-    """Strip markdown formatting and emoji from text before TTS."""
+    """Strip markdown formatting, emoji, and emotion tags from text before TTS."""
     text = text.replace("**", "").replace("*", "").replace("`", "")
     text = _EMOJI_RE.sub("", text)
+    text = _EMOTION_TAG_RE.sub("", text)
     return text.strip()
 
 
