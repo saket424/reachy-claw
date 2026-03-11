@@ -22,6 +22,14 @@ class VADBackend(ABC):
     def is_speech(self, audio: np.ndarray, sample_rate: int = 16000) -> bool:
         """Check if audio chunk contains speech."""
 
+    def speech_probability(self, audio: np.ndarray, sample_rate: int = 16000) -> float:
+        """Return raw speech probability for the audio chunk.
+
+        Default implementation returns 1.0 if speech detected, 0.0 otherwise.
+        Backends with native probability support should override this.
+        """
+        return 1.0 if self.is_speech(audio, sample_rate) else 0.0
+
     def reset(self) -> None:
         """Reset internal state (e.g. between utterances)."""
 
@@ -121,34 +129,42 @@ class SileroVAD(VADBackend):
 
         return float(out[0, 0])
 
-    def is_speech(self, audio: np.ndarray, sample_rate: int = 16000) -> bool:
-        self._load_model()
-
+    def _prepare_audio(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
+        """Normalize audio to float32 mono in [-1, 1]."""
         if audio.dtype != np.float32:
             audio = audio.astype(np.float32)
         if audio.ndim > 1:
             audio = audio.mean(axis=1)
         if np.abs(audio).max() > 1.0:
             audio = audio / 32768.0
+        return audio
 
-        # Reset state if sample rate changed
+    def _max_probability(self, audio: np.ndarray, sample_rate: int) -> float:
+        """Process audio and return max speech probability across chunks."""
+        self._load_model()
+        audio = self._prepare_audio(audio, sample_rate)
+
         if self._last_sr and self._last_sr != sample_rate:
             self._reset_states()
 
-        # Process in 512-sample chunks (required by Silero VAD at 16kHz)
+        max_prob = 0.0
         chunk_size = 512
         for i in range(0, len(audio), chunk_size):
             chunk = audio[i : i + chunk_size]
             if len(chunk) < chunk_size:
                 chunk = np.pad(chunk, (0, chunk_size - len(chunk)))
-
-            # Shape: (1, 512) — batch dim required by ONNX model
             chunk_2d = chunk.reshape(1, -1)
             prob = self._infer(chunk_2d, sample_rate)
+            if prob > max_prob:
+                max_prob = prob
+        return max_prob
 
-            if prob > self._threshold:
-                return True
-        return False
+    def is_speech(self, audio: np.ndarray, sample_rate: int = 16000) -> bool:
+        return self._max_probability(audio, sample_rate) > self._threshold
+
+    def speech_probability(self, audio: np.ndarray, sample_rate: int = 16000) -> float:
+        """Return max speech probability across 512-sample chunks."""
+        return self._max_probability(audio, sample_rate)
 
     def reset(self) -> None:
         if self._session is not None:

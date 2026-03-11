@@ -418,3 +418,94 @@ class TestBargeInConfig:
     def test_custom_confirm_frames(self):
         config = Config(barge_in_confirm_frames=5)
         assert config.barge_in_confirm_frames == 5
+
+    def test_default_silero_threshold(self):
+        config = Config()
+        assert config.barge_in_silero_threshold == 0.6
+
+    def test_custom_silero_threshold(self):
+        config = Config(barge_in_silero_threshold=0.8)
+        assert config.barge_in_silero_threshold == 0.8
+
+    def test_default_cooldown_ms(self):
+        config = Config()
+        assert config.barge_in_cooldown_ms == 500
+
+    def test_custom_cooldown_ms(self):
+        config = Config(barge_in_cooldown_ms=1000)
+        assert config.barge_in_cooldown_ms == 1000
+
+    def test_default_energy_threshold(self):
+        config = Config()
+        assert config.barge_in_energy_threshold == 0.02
+
+
+# ── Config: barge_in YAML mapping ─────────────────────────────────────
+
+
+class TestBargeInYamlMapping:
+    def test_yaml_maps_silero_threshold(self):
+        from reachy_claw.config import _apply_yaml
+
+        config = Config()
+        _apply_yaml(config, {"barge_in": {"silero_threshold": 0.7}})
+        assert config.barge_in_silero_threshold == 0.7
+
+    def test_yaml_maps_cooldown_ms(self):
+        from reachy_claw.config import _apply_yaml
+
+        config = Config()
+        _apply_yaml(config, {"barge_in": {"cooldown_ms": 1000}})
+        assert config.barge_in_cooldown_ms == 1000
+
+
+# ── VAD: speech_probability ───────────────────────────────────────────
+
+
+class TestVADSpeechProbability:
+    def test_energy_vad_returns_binary_probability(self):
+        from reachy_claw.vad import EnergyVAD
+
+        vad = EnergyVAD(threshold=0.01)
+        silence = np.zeros(512, dtype=np.float32)
+        loud = np.full(512, 0.5, dtype=np.float32)
+        assert vad.speech_probability(silence) == 0.0
+        assert vad.speech_probability(loud) == 1.0
+
+    def test_base_class_default_delegates_to_is_speech(self):
+        from reachy_claw.vad import VADBackend
+
+        class DummyVAD(VADBackend):
+            def is_speech(self, audio, sample_rate=16000):
+                return True
+
+        vad = DummyVAD()
+        assert vad.speech_probability(np.zeros(512, dtype=np.float32)) == 1.0
+
+
+# ── ConversationPlugin: _speaking_since tracking ─────────────────────
+
+
+class TestSpeakingSinceTracking:
+    def _make_plugin(self):
+        app = MagicMock()
+        app.config = Config()
+        plugin = ConversationPlugin(app)
+        return plugin
+
+    def test_speaking_since_set_on_state_change(self):
+        """_speaking_since is updated when state changes to SPEAKING."""
+        import time as _time
+
+        plugin = self._make_plugin()
+        before = _time.monotonic()
+        plugin._set_state(ConvState.SPEAKING)
+        after = _time.monotonic()
+        assert before <= plugin._speaking_since <= after
+
+    def test_speaking_since_not_updated_for_other_states(self):
+        """_speaking_since is NOT updated for non-SPEAKING states."""
+        plugin = self._make_plugin()
+        plugin._speaking_since = 0.0
+        plugin._set_state(ConvState.LISTENING)
+        assert plugin._speaking_since == 0.0

@@ -19,7 +19,10 @@ vad:
   backend: silero
 
 barge_in:
-  confirm_frames: 15
+  confirm_frames: 10
+  energy_threshold: 0.03
+  silero_threshold: 0.6
+  cooldown_ms: 800
 
 audio:
   device: "Reachy Mini Audio"

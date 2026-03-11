@@ -84,6 +84,7 @@ class ConversationPlugin(Plugin):
         self._conversation_active = False
         self._conversation_stopped = False  # STOPPED: still listen+send, but no TTS
         self._state = ConvState.IDLE
+        self._speaking_since: float = 0.0
         self._pending_tasks: set[asyncio.Task] = set()
 
     def setup(self) -> bool:
@@ -261,6 +262,8 @@ class ConversationPlugin(Plugin):
         if self._state != new_state:
             logger.debug(f"State: {self._state.value} → {new_state.value}")
             self._state = new_state
+            if new_state == ConvState.SPEAKING:
+                self._speaking_since = time.monotonic()
 
     def _spawn_task(self, coro: Coroutine[Any, Any, Any], *, name: str) -> None:
         """Track background tasks so they can be cancelled on shutdown."""
@@ -626,28 +629,46 @@ class ConversationPlugin(Plugin):
             if not isinstance(chunk, np.ndarray):
                 chunk = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
 
-            has_speech = await asyncio.to_thread(self._audio._detect_speech, chunk)
-
-            # ── SPEAKING state: detect barge-in ──
+            # ── SPEAKING state: detect barge-in (3-layer defense) ──
+            # Skip normal VAD path — barge-in uses its own energy+probability checks
             if self._state == ConvState.SPEAKING:
                 if not self.app.config.barge_in_enabled:
                     continue
-                if has_speech:
-                    barge_in_count += 1
-                    if barge_in_count >= confirm_frames:
-                        logger.info(f"Barge-in confirmed ({barge_in_count} frames)")
-                        speech_frames = [chunk]
-                        await self._fire_interrupt()
-                        if streaming_stt:
-                            self._stt.cancel_stream()
-                            await asyncio.to_thread(
-                                self._stt.start_stream, self.app.config.sample_rate
-                            )
-                            await asyncio.to_thread(self._stt.feed_chunk, chunk)
-                        self._set_state(ConvState.LISTENING)
-                        silence_count = 0
+
+                # Layer 1: Cooldown — ignore early frames after TTS starts
+                cooldown_s = self.app.config.barge_in_cooldown_ms / 1000.0
+                if time.monotonic() - self._speaking_since < cooldown_s:
+                    continue
+
+                # Layer 2: Energy gate — skip low-energy noise
+                energy = float(np.abs(chunk).mean())
+                if energy < self.app.config.barge_in_energy_threshold:
+                    barge_in_count = 0
+                    continue
+
+                # Layer 3: Stricter Silero threshold during playback
+                if self._vad:
+                    prob = await asyncio.to_thread(
+                        self._vad.speech_probability, chunk, self.app.config.sample_rate
+                    )
+                    if prob < self.app.config.barge_in_silero_threshold:
                         barge_in_count = 0
-                else:
+                        continue
+
+                # All layers passed — count toward confirmation
+                barge_in_count += 1
+                if barge_in_count >= confirm_frames:
+                    logger.info(f"Barge-in confirmed ({barge_in_count} frames)")
+                    speech_frames = [chunk]
+                    await self._fire_interrupt()
+                    if streaming_stt:
+                        self._stt.cancel_stream()
+                        await asyncio.to_thread(
+                            self._stt.start_stream, self.app.config.sample_rate
+                        )
+                        await asyncio.to_thread(self._stt.feed_chunk, chunk)
+                    self._set_state(ConvState.LISTENING)
+                    silence_count = 0
                     barge_in_count = 0
                 continue
 
@@ -656,6 +677,7 @@ class ConversationPlugin(Plugin):
                 continue
 
             # ── IDLE / LISTENING states: accumulate speech ──
+            has_speech = await asyncio.to_thread(self._audio._detect_speech, chunk)
             if has_speech:
                 if self._state == ConvState.IDLE:
                     self._set_state(ConvState.LISTENING)

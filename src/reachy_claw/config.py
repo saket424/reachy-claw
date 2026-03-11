@@ -78,6 +78,8 @@ class Config:
     barge_in_enabled: bool = True
     barge_in_energy_threshold: float = 0.02
     barge_in_confirm_frames: int = 3  # consecutive VAD-positive frames before interrupt (~200ms)
+    barge_in_silero_threshold: float = 0.6  # stricter VAD threshold during playback
+    barge_in_cooldown_ms: int = 500  # ignore barge-in for N ms after TTS starts
 
     # LLM backend (local Ollama, replaces gateway when set)
     llm_backend: str = "gateway"  # "gateway" (OpenClaw) or "ollama"
@@ -177,6 +179,8 @@ _YAML_FIELD_MAP: dict[tuple[str, str], str] = {
     ("barge_in", "enabled"): "barge_in_enabled",
     ("barge_in", "energy_threshold"): "barge_in_energy_threshold",
     ("barge_in", "confirm_frames"): "barge_in_confirm_frames",
+    ("barge_in", "silero_threshold"): "barge_in_silero_threshold",
+    ("barge_in", "cooldown_ms"): "barge_in_cooldown_ms",
     ("behavior", "wake_word"): "wake_word",
     ("behavior", "play_emotions"): "play_emotions",
     ("behavior", "idle_animations"): "idle_animations",
