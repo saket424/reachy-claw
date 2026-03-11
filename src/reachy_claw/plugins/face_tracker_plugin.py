@@ -66,21 +66,20 @@ class FaceTrackerPlugin(Plugin):
                 logger.info("mediapipe not installed, face tracker skipped")
                 return False
 
-        # Determine camera source
-        if self._camera_source == "sdk":
-            if self._has_sdk_camera():
-                self._use_sdk_camera = True
-                logger.info("Using SDK camera (zenoh) for face tracking")
-                return True
-            else:
-                logger.warning("SDK camera requested but not available")
+        # Determine camera source (retry — SDK camera may not be ready immediately)
+        if self._camera_source in ("sdk", "auto"):
+            for attempt in range(5):
+                if self._has_sdk_camera():
+                    self._use_sdk_camera = True
+                    logger.info("Using SDK camera (zenoh) for face tracking")
+                    return True
+                if attempt < 4:
+                    import time as _time
+                    _time.sleep(0.5)
+            if self._camera_source == "sdk":
+                logger.warning("SDK camera requested but not available after retries")
                 return False
-        elif self._camera_source == "auto":
-            if self._has_sdk_camera():
-                self._use_sdk_camera = True
-                logger.info("Using SDK camera (zenoh) for face tracking")
-                return True
-            # Fall through to OpenCV
+            # auto: fall through to OpenCV
             logger.info("SDK camera not available, falling back to OpenCV")
 
         # OpenCV camera check
@@ -140,17 +139,32 @@ class FaceTrackerPlugin(Plugin):
 
         self._face_lost_published = False
 
+        consecutive_errors = 0
+        max_consecutive_errors = 50  # ~2s at 25Hz — then back off
+
         try:
             while self._running:
-                if self._use_sdk_camera:
-                    frame = await asyncio.to_thread(self.app.reachy.media.get_frame)
-                else:
-                    ret, frame = await asyncio.to_thread(self._cap.read)
-                    frame = frame if ret else None
+                try:
+                    if self._use_sdk_camera:
+                        frame = await asyncio.to_thread(self.app.reachy.media.get_frame)
+                    else:
+                        ret, frame = await asyncio.to_thread(self._cap.read)
+                        frame = frame if ret else None
+                except Exception as e:
+                    consecutive_errors += 1
+                    if consecutive_errors <= 3 or consecutive_errors % 50 == 0:
+                        logger.warning(f"Frame capture error ({consecutive_errors}): {e}")
+                    if consecutive_errors >= max_consecutive_errors:
+                        await asyncio.sleep(1.0)  # back off on persistent failure
+                    else:
+                        await asyncio.sleep(0.04)
+                    continue
 
                 if frame is None:
                     await asyncio.sleep(0.04)
                     continue
+
+                consecutive_errors = 0
 
                 # Run face detection in thread to avoid blocking
                 eye_center, _roll = await asyncio.to_thread(

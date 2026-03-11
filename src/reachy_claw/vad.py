@@ -6,6 +6,7 @@ All VAD runs locally. Backends differ in compute: CPU (energy/silero) vs NPU (ha
 from __future__ import annotations
 
 import logging
+import threading
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -54,6 +55,7 @@ class SileroVAD(VADBackend):
         self._state: np.ndarray | None = None
         self._context: np.ndarray | None = None
         self._last_sr = 0
+        self._lock = threading.Lock()
 
     def preload(self) -> None:
         self._load_model()
@@ -144,20 +146,21 @@ class SileroVAD(VADBackend):
         self._load_model()
         audio = self._prepare_audio(audio, sample_rate)
 
-        if self._last_sr and self._last_sr != sample_rate:
-            self._reset_states()
+        with self._lock:
+            if self._last_sr and self._last_sr != sample_rate:
+                self._reset_states()
 
-        max_prob = 0.0
-        chunk_size = 512
-        for i in range(0, len(audio), chunk_size):
-            chunk = audio[i : i + chunk_size]
-            if len(chunk) < chunk_size:
-                chunk = np.pad(chunk, (0, chunk_size - len(chunk)))
-            chunk_2d = chunk.reshape(1, -1)
-            prob = self._infer(chunk_2d, sample_rate)
-            if prob > max_prob:
-                max_prob = prob
-        return max_prob
+            max_prob = 0.0
+            chunk_size = 512
+            for i in range(0, len(audio), chunk_size):
+                chunk = audio[i : i + chunk_size]
+                if len(chunk) < chunk_size:
+                    chunk = np.pad(chunk, (0, chunk_size - len(chunk)))
+                chunk_2d = chunk.reshape(1, -1)
+                prob = self._infer(chunk_2d, sample_rate)
+                if prob > max_prob:
+                    max_prob = prob
+            return max_prob
 
     def is_speech(self, audio: np.ndarray, sample_rate: int = 16000) -> bool:
         return self._max_probability(audio, sample_rate) > self._threshold
@@ -168,7 +171,8 @@ class SileroVAD(VADBackend):
 
     def reset(self) -> None:
         if self._session is not None:
-            self._reset_states()
+            with self._lock:
+                self._reset_states()
 
     @property
     def threshold(self) -> float:
