@@ -78,6 +78,7 @@ class ConversationPlugin(Plugin):
         # Audio queue: (SentenceItem, list_of_chunks | None) — TTS worker feeds this
         self._audio_queue: asyncio.Queue[tuple[SentenceItem, list | None] | None] = asyncio.Queue(maxsize=3)
         self._interrupt_event = asyncio.Event()
+        self._gst_playing = False  # GStreamer playback pipeline state
 
         self._current_run_id: str | None = None
         self._conversation_active = False
@@ -997,8 +998,28 @@ class ConversationPlugin(Plugin):
             if item.is_last:
                 await self._finish_speaking()
 
+    async def _stop_gst_playback(self) -> None:
+        """Stop GStreamer playback pipeline with drain wait."""
+        if self._gst_playing and self.app.reachy:
+            try:
+                await asyncio.sleep(0.6)  # let ALSA buffer drain
+                self.app.reachy.media.stop_playing()
+            except Exception:
+                pass
+            self._gst_playing = False
+
+    def _stop_gst_playback_sync(self) -> None:
+        """Stop GStreamer playback pipeline (sync, for interrupt path)."""
+        if self._gst_playing and self.app.reachy:
+            try:
+                self.app.reachy.media.stop_playing()
+            except Exception:
+                pass
+            self._gst_playing = False
+
     async def _finish_speaking(self) -> None:
         """Clean up after speaking is done."""
+        await self._stop_gst_playback()
         self.app.is_speaking = False
         if self._wobbler:
             self._wobbler.reset()
@@ -1028,6 +1049,7 @@ class ConversationPlugin(Plugin):
         _drain_queue(self._sentence_queue)
         _drain_queue(self._audio_queue)
 
+        self._stop_gst_playback_sync()
         self.app.is_speaking = False
         if self._wobbler:
             self._wobbler.reset()
@@ -1067,28 +1089,45 @@ class ConversationPlugin(Plugin):
                 source = self._tts.synthesize_streaming(text)
 
             if self.app.reachy and getattr(getattr(self.app.reachy, "media", None), "audio", None) is not None:
+                # Accumulate all chunks first, then push as continuous audio
+                all_chunks = []
+                sample_rate = 16000
+                async for chunk, sr in source:
+                    if self._interrupt_event.is_set():
+                        return True
+                    all_chunks.append(chunk)
+                    sample_rate = sr
+
+                if not all_chunks:
+                    return False
+
+                audio = np.concatenate(all_chunks)
+
                 reachy = self.app.reachy
-                reachy.media.start_playing()
+                # Keep pipeline alive across sentences — only start if not already playing
+                if not self._gst_playing:
+                    reachy.media.start_playing()
+                    self._gst_playing = True
                 if self._wobbler:
                     self._wobbler.start()
 
                 interrupted = False
+                chunk_size = 1600  # 100ms chunks at 16kHz
                 try:
-                    async for chunk, sr in source:
+                    for i in range(0, len(audio), chunk_size):
                         if self._interrupt_event.is_set():
                             interrupted = True
                             break
+                        chunk = audio[i : i + chunk_size]
                         reachy.media.push_audio_sample(chunk)
                         if self._wobbler:
                             self._wobbler.feed(chunk)
-                        await asyncio.sleep(len(chunk) / sr * 0.9)
+                        await asyncio.sleep(chunk_size / sample_rate * 0.9)
                 finally:
                     if self._wobbler:
                         self._wobbler.reset()
                     reachy.set_target_antenna_joint_positions([0.0, 0.0])
-                    if not interrupted:
-                        await asyncio.sleep(0.05)
-                    reachy.media.stop_playing()
+                # Don't stop pipeline here — it stays open for next sentence
                 return interrupted
             else:
                 # Local playback via sounddevice (no temp file, no subprocess)
@@ -1225,7 +1264,8 @@ class ConversationPlugin(Plugin):
 
             reachy.set_target_antenna_joint_positions([0.0, 0.0])
             if not interrupted:
-                await asyncio.sleep(0.3)
+                # Wait for ALSA buffer to drain (last chunks + hw buffer)
+                await asyncio.sleep(0.8)
             reachy.media.stop_playing()
             return interrupted
         finally:

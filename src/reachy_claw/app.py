@@ -35,12 +35,13 @@ class ReachyClawApp:
         self._plugins: List[Plugin] = []
 
     @staticmethod
-    def _patch_gstreamer_camera() -> None:
-        """Patch SDK for Docker: fix camera discovery and skip audio init.
+    def _patch_gstreamer() -> None:
+        """Patch SDK GStreamer for Docker/Jetson.
 
-        Two issues when running in a container without PipeWire:
-        1. DeviceMonitor uses ``device.path`` instead of ``api.v4l2.path``
-        2. GStreamer audio pipeline grabs the ALSA device, blocking our own audio
+        Fixes:
+        1. Camera: DeviceMonitor uses ``device.path`` instead of ``api.v4l2.path``
+        2. Audio: no PulseAudio on Jetson, use ALSA directly for Reachy Mini Audio
+        3. macOS: disable audio init entirely (no GStreamer audio)
         """
         try:
             from reachy_mini.media.camera_gstreamer import GStreamerCamera
@@ -48,15 +49,14 @@ class ReachyClawApp:
         except Exception:
             return
 
-        # Patch: skip SDK audio init on non-Linux (macOS etc.) where
-        # GStreamer audio grabs the ALSA device, blocking our own audio.
-        # On Linux (Jetson), keep SDK audio so Reachy speaker works.
         import sys
         if sys.platform != "linux":
             MediaManager._init_audio = lambda self, *a, **kw: None
-            logger.debug("Patched SDK MediaManager: audio init disabled")
+            logger.debug("Patched SDK MediaManager: audio init disabled (non-Linux)")
         else:
-            logger.debug("Keeping SDK audio init (Linux)")
+            # Patch GStreamer audio to use ALSA directly (no PulseAudio on Jetson)
+            ReachyClawApp._patch_gstreamer_audio()
+            logger.debug("Patched SDK GStreamer audio for ALSA")
 
         _orig = GStreamerCamera.get_video_device
 
@@ -100,6 +100,107 @@ class ReachyClawApp:
 
         GStreamerCamera.get_video_device = _patched
 
+    @staticmethod
+    def _patch_gstreamer_audio() -> None:
+        """Patch SDK GStreamer audio to use ALSA directly on Jetson.
+
+        The SDK assumes PulseAudio but Jetson uses bare ALSA.
+        Find the Reachy Mini Audio card via ALSA and patch the pipeline init
+        to use alsasink/alsasrc instead of pulsesink/pulsesrc.
+        """
+        try:
+            from reachy_mini.media.audio_gstreamer import GStreamerAudio
+        except Exception:
+            return
+
+        # Find ALSA card number for "Reachy Mini Audio" via /proc/asound/cards
+        alsa_device = None
+        try:
+            import re
+            cards_text = open("/proc/asound/cards").read()
+            m = re.search(r"^\s*(\d+)\s.*Reachy Mini Audio", cards_text, re.MULTILINE)
+            if m:
+                alsa_device = f"hw:{m.group(1)},0"
+        except Exception as e:
+            logger.debug("ALSA card detection failed: %s", e)
+
+        if not alsa_device:
+            logger.warning("Reachy Mini Audio ALSA card not found, skipping audio patch")
+            return
+
+        logger.info("Patching SDK audio to use ALSA device: %s", alsa_device)
+
+        _orig_record = GStreamerAudio._init_pipeline_record
+        _orig_playback = GStreamerAudio._init_pipeline_playback
+
+        def _patched_record(self, pipeline):
+            """Use silent dummy source — mic is handled by sounddevice, not SDK."""
+            try:
+                import gi
+                gi.require_version("Gst", "1.0")
+                gi.require_version("GstApp", "1.0")
+                from gi.repository import Gst, GstApp  # noqa: F811
+
+                self._appsink_audio = Gst.ElementFactory.make("appsink")
+                caps = Gst.Caps.from_string(
+                    f"audio/x-raw,rate={self.SAMPLE_RATE},channels={self.CHANNELS},"
+                    "format=F32LE,layout=interleaved"
+                )
+                self._appsink_audio.set_property("caps", caps)
+
+                # Use audiotestsrc with silence instead of real mic
+                # to avoid competing with sounddevice for the ALSA capture device
+                audiosrc = Gst.ElementFactory.make("audiotestsrc")
+                audiosrc.set_property("wave", 4)  # 4 = silence
+                audiosrc.set_property("is-live", True)
+                audioconvert = Gst.ElementFactory.make("audioconvert")
+                audioresample = Gst.ElementFactory.make("audioresample")
+
+                for el in [audiosrc, audioconvert, audioresample, self._appsink_audio]:
+                    pipeline.add(el)
+                audiosrc.link(audioconvert)
+                audioconvert.link(audioresample)
+                audioresample.link(self._appsink_audio)
+                logger.debug("SDK audio record pipeline: dummy (mic via sounddevice)")
+            except Exception as e:
+                logger.warning("Dummy record pipeline failed: %s, falling back", e)
+                _orig_record(self, pipeline)
+
+        def _patched_playback(self, pipeline):
+            """Use alsasink instead of pulsesink/autoaudiosink."""
+            try:
+                import gi
+                gi.require_version("Gst", "1.0")
+                gi.require_version("GstApp", "1.0")
+                from gi.repository import Gst, GstApp  # noqa: F811
+
+                self._appsrc = Gst.ElementFactory.make("appsrc")
+                self._appsrc.set_property("format", Gst.Format.TIME)
+                self._appsrc.set_property("is-live", True)
+                caps = Gst.Caps.from_string(
+                    f"audio/x-raw,format=F32LE,channels={self.CHANNELS},"
+                    f"rate={self.SAMPLE_RATE},layout=interleaved"
+                )
+                self._appsrc.set_property("caps", caps)
+
+                audioconvert = Gst.ElementFactory.make("audioconvert")
+                audioresample = Gst.ElementFactory.make("audioresample")
+                audiosink = Gst.ElementFactory.make("alsasink")
+                audiosink.set_property("device", alsa_device)
+
+                for el in [self._appsrc, audioconvert, audioresample, audiosink]:
+                    pipeline.add(el)
+                self._appsrc.link(audioconvert)
+                audioconvert.link(audioresample)
+                audioresample.link(audiosink)
+                logger.debug("SDK audio playback pipeline: alsasink device=%s", alsa_device)
+            except Exception as e:
+                logger.warning("ALSA playback pipeline failed: %s, falling back", e)
+                _orig_playback(self, pipeline)
+
+        GStreamerAudio._init_pipeline_record = _patched_record
+        GStreamerAudio._init_pipeline_playback = _patched_playback
+
     def connect_robot(self) -> None:
         """Connect to the Reachy Mini robot."""
         try:
@@ -109,7 +210,7 @@ class ReachyClawApp:
             self.reachy = None
             return
 
-        self._patch_gstreamer_camera()
+        self._patch_gstreamer()
 
         kwargs = {}
         if self.config.reachy_connection_mode != "auto":

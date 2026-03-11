@@ -30,7 +30,7 @@ reachy:
   spawn_daemon: false  # daemon runs as separate container
   connection_mode: localhost_only
   daemon_port: 38001
-  media_backend: no_media
+  media_backend: gstreamer
 
 vision:
   camera_source: opencv
