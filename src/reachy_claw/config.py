@@ -102,7 +102,7 @@ class Config:
     motion_idle_animation_interval: float = 5.0
 
     # Vision / face tracking
-    vision_tracker_type: str = "mediapipe"  # "mediapipe", "none"
+    vision_tracker_type: str = "mediapipe"  # "mediapipe", "remote", "none"
     vision_camera_source: str = "auto"  # "auto" (SDK if available, else OpenCV), "sdk", "opencv"
     vision_camera_index: int = 0
     vision_max_yaw: float = 25.0
@@ -110,6 +110,13 @@ class Config:
     vision_smoothing_alpha: float = 0.3
     vision_deadzone: float = 0.02
     vision_face_lost_delay: float = 2.0
+
+    # Vision TRT service (used when vision_tracker_type == "remote")
+    vision_service_url: str = "tcp://127.0.0.1:8631"
+    vision_shm_path: str = "/dev/shm/vision_frame"
+    vision_emotion_threshold: float = 0.6
+    vision_emotion_cooldown: float = 3.0
+    vision_identity_threshold: float = 0.4
 
     # Plugin enable flags
     enable_face_tracker: bool = True  # auto-skips if deps missing
@@ -203,6 +210,11 @@ _YAML_FIELD_MAP: dict[tuple[str, str], str] = {
     ("vision", "smoothing_alpha"): "vision_smoothing_alpha",
     ("vision", "deadzone"): "vision_deadzone",
     ("vision", "face_lost_delay"): "vision_face_lost_delay",
+    ("vision", "service_url"): "vision_service_url",
+    ("vision", "shm_path"): "vision_shm_path",
+    ("vision", "emotion_threshold"): "vision_emotion_threshold",
+    ("vision", "emotion_cooldown"): "vision_emotion_cooldown",
+    ("vision", "identity_threshold"): "vision_identity_threshold",
     ("plugins", "face_tracker"): "enable_face_tracker",
     ("plugins", "motion"): "enable_motion",
 }

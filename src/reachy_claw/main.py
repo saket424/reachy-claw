@@ -134,7 +134,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--tracker-type",
-        choices=["mediapipe", "none"],
+        choices=["mediapipe", "remote", "none"],
         default=None,
         help="Face tracker backend",
     )
@@ -294,9 +294,14 @@ async def async_main(config: Config) -> int:
         app.register(MotionPlugin(app))
 
     if config.enable_face_tracker:
-        from reachy_claw.plugins.face_tracker_plugin import FaceTrackerPlugin
+        if config.vision_tracker_type == "remote":
+            from reachy_claw.plugins.vision_client_plugin import VisionClientPlugin
 
-        app.register(FaceTrackerPlugin(app))
+            app.register(VisionClientPlugin(app))
+        else:
+            from reachy_claw.plugins.face_tracker_plugin import FaceTrackerPlugin
+
+            app.register(FaceTrackerPlugin(app))
 
     from reachy_claw.plugins.conversation_plugin import ConversationPlugin
 

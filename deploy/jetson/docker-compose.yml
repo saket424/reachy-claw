@@ -35,6 +35,27 @@ services:
       reachy-daemon:
         condition: service_healthy
 
+  vision-trt:
+    profiles: ["vision"]
+    build:
+      context: ./vision-trt
+    container_name: vision-trt
+    restart: unless-stopped
+    network_mode: host
+    runtime: nvidia
+    volumes:
+      - /dev/shm:/dev/shm
+      - vision-trt-engines:/app/engines
+      - vision-trt-data:/app/data
+    environment:
+      - SHM_FRAME_PATH=/dev/shm/vision_frame
+      - ZMQ_PUB_PORT=8631
+      - HTTP_PORT=8630
+      - STREAM_PORT=8632
+    depends_on:
+      reachy-claw:
+        condition: service_started
+
   openclaw-gateway:
     profiles: ["openclaw"]
     image: ghcr.io/phioranex/openclaw-docker:latest
@@ -57,3 +78,5 @@ services:
 
 volumes:
   openclaw-config:
+  vision-trt-engines:
+  vision-trt-data:

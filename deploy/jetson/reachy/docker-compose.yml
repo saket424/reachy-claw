@@ -43,9 +43,43 @@ services:
     volumes:
       - ./reachy-claw.jetson.yaml:/app/reachy-claw.yaml:ro
       - /run/udev:/run/udev:ro
+      - /dev/shm:/dev/shm
     depends_on:
       reachy-daemon:
         condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Vision TRT (opt-in) ──────────────────────────────────────────
+
+  vision-trt:
+    profiles: ["vision"]
+    build: ../vision-trt
+    container_name: vision-trt
+    restart: unless-stopped
+    network_mode: host
+    runtime: nvidia
+    volumes:
+      - /dev/shm:/dev/shm
+      - vision-trt-engines:/app/engines
+      - vision-trt-data:/app/data
+    environment:
+      - SHM_FRAME_PATH=/dev/shm/vision_frame
+      - ZMQ_PUB_PORT=8631
+      - HTTP_PORT=8630
+      - STREAM_PORT=8632
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8630/health', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      reachy-claw:
+        condition: service_started
     logging:
       driver: json-file
       options:
@@ -81,3 +115,5 @@ services:
 
 volumes:
   openclaw-config:
+  vision-trt-engines:
+  vision-trt-data:

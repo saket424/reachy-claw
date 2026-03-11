@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vision TRT - Reachy Mini</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="header">
+        <h1>Vision TRT</h1>
+        <div class="stats">
+            <span>FPS: <span class="value" id="fps-value">--</span></span>
+            <span>Latency: <span class="value" id="latency-value">--</span></span>
+            <span>Faces: <span class="value" id="faces-value">0</span></span>
+        </div>
+    </div>
+
+    <div class="main">
+        <div class="video-panel">
+            <img id="video-stream" alt="Video stream">
+            <canvas id="overlay-canvas" class="interactive"></canvas>
+            <div class="no-connection" id="connection-status">
+                <div class="icon">&#x1F4F7;</div>
+                <p>Connecting to vision service...</p>
+            </div>
+        </div>
+
+        <div class="sidebar">
+            <div class="panel">
+                <h2>Detection</h2>
+                <div class="detection-info" id="detection-info">
+                    <span class="label">Waiting for data...</span>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>Face Database</h2>
+                <ul class="face-list" id="face-list">
+                    <li style="color: #a0a0c0">Loading...</li>
+                </ul>
+                <div style="margin-top: 10px;">
+                    <button class="btn btn-primary" onclick="showEnrollDialog()" style="width: 100%">
+                        + Enroll Face
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Enroll Dialog -->
+    <div class="dialog-overlay" id="enroll-dialog">
+        <div class="dialog">
+            <h3>Enroll Face</h3>
+            <p style="font-size: 13px; color: #a0a0c0; margin-bottom: 12px;">
+                Look at the camera. The largest detected face will be registered.
+            </p>
+            <input type="text" id="enroll-name" placeholder="Enter name...">
+            <div class="actions">
+                <button class="btn" style="color: #a0a0c0" onclick="hideEnrollDialog()">Cancel</button>
+                <button class="btn btn-primary" onclick="enrollFace()">Enroll</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

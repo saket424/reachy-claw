@@ -51,6 +51,12 @@ reachy:
 vision:
   camera_source: sdk
   tracker: mediapipe
+  # To use vision-trt service (requires --profile vision):
+  # tracker: remote
+  # service_url: tcp://127.0.0.1:8631
+  # shm_path: /dev/shm/vision_frame
+  # emotion_threshold: 0.6
+  # emotion_cooldown: 3.0
 
 plugins:
   face_tracker: true

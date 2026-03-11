@@ -1,0 +1,16 @@
+# TensorRT + CUDA (pre-installed in L4T base image)
+pycuda
+numpy
+opencv-python-headless
+
+# Networking
+pyzmq
+msgpack
+
+# Web server
+uvicorn[standard]
+fastapi
+websockets
+
+# Utilities
+Pillow
