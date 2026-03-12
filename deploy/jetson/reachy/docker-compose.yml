@@ -1,10 +1,12 @@
 # Unified Reachy Claw stack for Jetson.
 #
-# Two LLM modes:
-#   Ollama mode (default):   docker compose up -d
-#   OpenClaw mode:           docker compose --profile openclaw up -d
+# LLM modes (pick one):
+#   Ollama mode (default):  docker compose --profile ollama up -d
+#   OpenClaw mode:          docker compose --profile openclaw up -d
+#   + vision:               add --profile vision
 #
 # Both modes share: reachy-daemon, reachy-claw, speech (external).
+# Ollama profile adds: ollama container.
 # OpenClaw profile adds: openclaw-gateway.
 
 services:
@@ -35,7 +37,7 @@ services:
         max-file: "3"
 
   reachy-claw:
-    image: sensecraft-missionpack.seeed.cn/solution/reachy-claw:v1.0
+    image: reachy-claw:v1.9
     container_name: reachy-claw
     restart: unless-stopped
     network_mode: host
@@ -47,6 +49,12 @@ services:
     depends_on:
       reachy-daemon:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8640/health', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     logging:
       driver: json-file
       options:
@@ -64,9 +72,14 @@ services:
     runtime: nvidia
     volumes:
       - /dev/shm:/dev/shm
+      - ../vision-trt/models:/app/models:ro
       - vision-trt-engines:/app/engines
       - vision-trt-data:/app/data
+      # Mount host TensorRT (JetPack 6.x)
+      - /usr/lib/python3.10/dist-packages/tensorrt:/usr/lib/python3.10/dist-packages/tensorrt:ro
+      - /lib/aarch64-linux-gnu:/host-libs:ro
     environment:
+      - LD_LIBRARY_PATH=/host-libs:/usr/local/cuda/lib64
       - SHM_FRAME_PATH=/dev/shm/vision_frame
       - ZMQ_PUB_PORT=8631
       - HTTP_PORT=8630
@@ -80,6 +93,29 @@ services:
     depends_on:
       reachy-claw:
         condition: service_started
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Ollama profile (opt-in) ──────────────────────────────────────
+
+  ollama:
+    profiles: ["ollama"]
+    image: ollama/ollama
+    container_name: ollama
+    restart: unless-stopped
+    network_mode: host
+    runtime: nvidia
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     logging:
       driver: json-file
       options:
@@ -114,6 +150,7 @@ services:
         max-file: "3"
 
 volumes:
+  ollama-data:
   openclaw-config:
   vision-trt-engines:
   vision-trt-data:
