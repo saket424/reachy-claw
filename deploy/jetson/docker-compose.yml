@@ -43,18 +43,19 @@ services:
     restart: unless-stopped
     network_mode: host
     runtime: nvidia
+    devices:
+      - /dev/video0:/dev/video0
     volumes:
-      - /dev/shm:/dev/shm
       - vision-trt-engines:/app/engines
       - vision-trt-data:/app/data
     environment:
-      - SHM_FRAME_PATH=/dev/shm/vision_frame
+      - CAMERA_DEVICE=/dev/video0
       - ZMQ_PUB_PORT=8631
       - HTTP_PORT=8630
       - STREAM_PORT=8632
     depends_on:
-      reachy-claw:
-        condition: service_started
+      reachy-daemon:
+        condition: service_healthy
 
   openclaw-gateway:
     profiles: ["openclaw"]

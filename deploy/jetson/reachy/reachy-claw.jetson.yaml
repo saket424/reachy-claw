@@ -32,6 +32,7 @@ vad:
   backend: silero
 
 barge_in:
+  enabled: false  # monologue mode: no barge-in
   confirm_frames: 10
   energy_threshold: 0.03
   silero_threshold: 0.6
@@ -49,14 +50,19 @@ reachy:
   media_backend: gstreamer
 
 vision:
-  camera_source: sdk
-  tracker: mediapipe
-  # To use vision-trt service (requires --profile vision):
-  # tracker: remote
-  # service_url: tcp://127.0.0.1:8631
-  # shm_path: /dev/shm/vision_frame
-  # emotion_threshold: 0.6
-  # emotion_cooldown: 3.0
+  tracker: remote
+  service_url: tcp://127.0.0.1:8631
+  emotion_threshold: 0.6
+  emotion_cooldown: 3.0
+
+conversation:
+  mode: monologue
+  monologue_interval: 5.0
+  monologue_volume: 0.3
+
+dashboard:
+  enabled: true
+  port: 8640
 
 plugins:
   face_tracker: true

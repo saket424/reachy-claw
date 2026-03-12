@@ -15,12 +15,15 @@ logger = logging.getLogger(__name__)
 class TRTEngine:
     """Wrapper around a TensorRT engine with numpy I/O."""
 
-    def __init__(self, engine_path: str, onnx_path: str | None = None):
+    def __init__(self, engine_path: str, onnx_path: str | None = None,
+                 input_shape: tuple | None = None):
         self._engine_path = engine_path
         self._onnx_path = onnx_path
+        self._input_shape = input_shape  # e.g. (1, 3, 640, 640) for fixed dims
         self._engine = None
         self._context = None
         self._stream = None
+        self._cuda_ctx = None  # PyCUDA context for thread safety
         self._bindings = {}  # name → (device_ptr, host_array, shape)
 
     def build_or_load(self) -> bool:
@@ -32,6 +35,9 @@ class TRTEngine:
         except ImportError as e:
             logger.error(f"TensorRT/PyCUDA not available: {e}")
             return False
+
+        # Save CUDA context for thread-safe inference
+        self._cuda_ctx = cuda.Context.get_current()
 
         trt_logger = trt.Logger(trt.Logger.WARNING)
 
@@ -83,6 +89,39 @@ class TRTEngine:
             config.set_flag(trt.BuilderFlag.FP16)
             logger.info("FP16 enabled")
 
+        # Handle dynamic input shapes — create optimization profile
+        has_dynamic = False
+        for i in range(network.num_inputs):
+            inp = network.get_input(i)
+            shape = inp.shape
+            if any(d == -1 for d in shape):
+                has_dynamic = True
+                break
+
+        if has_dynamic:
+            profile = builder.create_optimization_profile()
+            for i in range(network.num_inputs):
+                inp = network.get_input(i)
+                name = inp.name
+                shape = list(inp.shape)
+
+                if self._input_shape:
+                    # Use explicitly provided shape
+                    fixed = list(self._input_shape)
+                else:
+                    # Infer sensible defaults for dynamic dims
+                    fixed = []
+                    for j, d in enumerate(shape):
+                        if d == -1:
+                            # Batch dim (index 0) → 1; spatial dims → 640
+                            fixed.append(1 if j == 0 else 640)
+                        else:
+                            fixed.append(d)
+
+                logger.info(f"Dynamic input '{name}': shape={shape} → fixed={fixed}")
+                profile.set_shape(name, fixed, fixed, fixed)
+            config.add_optimization_profile(profile)
+
         engine_bytes = builder.build_serialized_network(network, config)
         if engine_bytes is None:
             logger.error("TRT engine build failed")
@@ -115,6 +154,19 @@ class TRTEngine:
 
     def infer(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """Run inference with named inputs/outputs."""
+        import pycuda.driver as cuda
+
+        # Ensure CUDA context is active on this thread
+        if self._cuda_ctx is not None:
+            self._cuda_ctx.push()
+
+        try:
+            return self._infer_impl(inputs)
+        finally:
+            if self._cuda_ctx is not None:
+                self._cuda_ctx.pop()
+
+    def _infer_impl(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         import pycuda.driver as cuda
 
         for name, data in inputs.items():
@@ -157,16 +209,17 @@ def load_engines(model_dir: str, engine_dir: str) -> dict[str, TRTEngine]:
 
     engines = {}
     model_specs = {
-        "scrfd": "scrfd_2.5g_bnkps.onnx",
-        "arcface": "w600k_mbf.onnx",
-        "emotion": "enet_b0_8_best_afew.onnx",
+        # name: (onnx_file, input_shape_override_or_None)
+        "scrfd": ("scrfd_2.5g_bnkps.onnx", (1, 3, 640, 640)),
+        "arcface": ("w600k_mbf.onnx", (1, 3, 112, 112)),
+        "emotion": ("enet_b0_8_best_afew.onnx", (1, 3, 224, 224)),
     }
 
-    for name, onnx_file in model_specs.items():
+    for name, (onnx_file, input_shape) in model_specs.items():
         onnx_path = model_dir / onnx_file
         engine_path = engine_dir / f"{name}.engine"
 
-        engine = TRTEngine(str(engine_path), str(onnx_path))
+        engine = TRTEngine(str(engine_path), str(onnx_path), input_shape=input_shape)
         if engine.build_or_load():
             engines[name] = engine
             logger.info(f"Engine ready: {name}")

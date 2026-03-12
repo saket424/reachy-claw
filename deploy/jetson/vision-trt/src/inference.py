@@ -126,44 +126,100 @@ class VisionPipeline:
         input_w = self._config.INPUT_WIDTH
         input_h = self._config.INPUT_HEIGHT
 
-        # Preprocess: resize + normalize
-        img = cv2.resize(frame, (input_w, input_h))
-        img = img.astype(np.float32)
+        # Preprocess: resize + normalize (skip resize if already correct size)
+        h, w = frame.shape[:2]
+        if (w, h) == (input_w, input_h):
+            img = frame.astype(np.float32)
+        else:
+            img = cv2.resize(frame, (input_w, input_h), interpolation=cv2.INTER_NEAREST).astype(np.float32)
         img = (img - 127.5) / 128.0
         img = img.transpose(2, 0, 1)[np.newaxis]  # NCHW
 
         outputs = engine.infer({"input.1": img})
 
-        # Parse SCRFD outputs (stride 8, 16, 32)
-        detections = []
         scale_x = orig_w / input_w
         scale_y = orig_h / input_h
         threshold = self._config.DETECTION_THRESHOLD
 
-        # SCRFD output parsing depends on exact model variant
-        # For scrfd_2.5g_bnkps: outputs contain score_8/16/32, bbox_8/16/32, kps_8/16/32
-        # Simplified: iterate outputs and parse based on naming convention
         detections = self._parse_scrfd_outputs(outputs, scale_x, scale_y, threshold)
         return detections
 
     def _parse_scrfd_outputs(
         self, outputs: dict, scale_x: float, scale_y: float, threshold: float
     ) -> list[tuple]:
-        """Parse SCRFD multi-stride outputs into detections."""
-        # This is a simplified parser — actual output tensor names
-        # depend on the specific ONNX export. Common pattern:
-        # score_stride{8,16,32}, bbox_stride{8,16,32}, kps_stride{8,16,32}
+        """Parse SCRFD multi-stride outputs into detections.
 
+        SCRFD outputs 9 tensors in groups of 3 (score, bbox, kps) per stride.
+        The output order is always: [score_8, bbox_8, kps_8, score_16, bbox_16,
+        kps_16, score_32, bbox_32, kps_32]. Tensor names may be numeric (e.g.
+        '443', '471') rather than semantic, so we match by order + shape.
+        """
         detections = []
         strides = [8, 16, 32]
         input_h = self._config.INPUT_HEIGHT
         input_w = self._config.INPUT_WIDTH
 
-        for stride in strides:
-            score_key = None
-            bbox_key = None
-            kps_key = None
+        # Try semantic name matching first
+        has_semantic = any(
+            "stride" in k or "score" in k for k in outputs
+        )
 
+        if has_semantic:
+            groups = self._match_outputs_by_name(outputs, strides)
+        else:
+            groups = self._match_outputs_by_order(outputs, strides, input_h, input_w)
+
+        for stride, (scores_arr, bbox_arr, kps_arr) in groups.items():
+            scores = scores_arr.flatten()
+            mask = scores > threshold
+            if not mask.any():
+                continue
+
+            indices = np.where(mask)[0]
+            feat_h = input_h // stride
+            feat_w = input_w // stride
+            num_spatial = feat_h * feat_w
+            num_anchors = max(1, len(scores) // num_spatial)
+            bbox_data = bbox_arr.reshape(-1, 4) if bbox_arr is not None else None
+            kps_data = kps_arr.reshape(-1, 10) if kps_arr is not None else None
+
+            for idx in indices:
+                spatial_idx = idx // num_anchors
+                row = spatial_idx // feat_w
+                col = spatial_idx % feat_w
+                score = float(scores[idx])
+
+                if bbox_data is None or idx >= len(bbox_data):
+                    continue
+                dl, dt, dr, db = bbox_data[idx]
+                cx = (col + 0.5) * stride
+                cy = (row + 0.5) * stride
+                x1 = (cx - dl * stride) * scale_x
+                y1 = (cy - dt * stride) * scale_y
+                x2 = (cx + dr * stride) * scale_x
+                y2 = (cy + db * stride) * scale_y
+
+                landmarks = []
+                if kps_data is not None and idx < len(kps_data):
+                    kps = kps_data[idx]
+                    for k in range(5):
+                        lx = (kps[k * 2] * stride + cx) * scale_x
+                        ly = (kps[k * 2 + 1] * stride + cy) * scale_y
+                        landmarks.append([lx, ly])
+
+                detections.append(([x1, y1, x2, y2], landmarks, score))
+
+        if len(detections) > 1:
+            detections = self._nms(detections, iou_threshold=0.4)
+
+        return detections
+
+    @staticmethod
+    def _match_outputs_by_name(outputs, strides):
+        """Match output tensors by semantic names (stride/score/bbox/kps)."""
+        groups = {}
+        for stride in strides:
+            score_key = bbox_key = kps_key = None
             for key in outputs:
                 if f"stride{stride}" in key or f"_{stride}" in key:
                     if "score" in key:
@@ -172,59 +228,44 @@ class VisionPipeline:
                         bbox_key = key
                     elif "kps" in key:
                         kps_key = key
+            if score_key:
+                groups[stride] = (
+                    outputs[score_key],
+                    outputs.get(bbox_key) if bbox_key else None,
+                    outputs.get(kps_key) if kps_key else None,
+                )
+        return groups
 
-            if score_key is None:
-                continue
+    @staticmethod
+    def _match_outputs_by_order(outputs, strides, input_h, input_w):
+        """Match output tensors by shape heuristics.
 
-            scores = outputs[score_key].flatten()
-            mask = scores > threshold
-            if not mask.any():
-                continue
+        SCRFD outputs 9 tensors grouped by type (not by stride):
+        [score_s8, score_s16, score_s32, bbox_s8, bbox_s16, bbox_s32, kps_s8, kps_s16, kps_s32]
+        Score has last dim 1, bbox has 4, kps has 10.
+        We classify by last dimension and sort by size (largest = smallest stride).
+        """
+        tensors = list(outputs.values())
 
-            indices = np.where(mask)[0]
-            feat_h = input_h // stride
-            feat_w = input_w // stride
+        # Classify by last dimension
+        scored = [t for t in tensors if t.shape[-1] == 1]
+        bboxed = [t for t in tensors if t.shape[-1] == 4]
+        kpsed = [t for t in tensors if t.shape[-1] == 10]
 
-            for idx in indices:
-                row = idx // feat_w
-                col = idx % feat_w
-                score = float(scores[idx])
+        # Sort each by number of elements descending (stride 8 has largest feature map)
+        scored.sort(key=lambda t: t.size, reverse=True)
+        bboxed.sort(key=lambda t: t.size, reverse=True)
+        kpsed.sort(key=lambda t: t.size, reverse=True)
 
-                # Decode bbox (center format)
-                if bbox_key and bbox_key in outputs:
-                    bbox_data = outputs[bbox_key].reshape(-1, 4)
-                    if idx < len(bbox_data):
-                        dx, dy, dw, dh = bbox_data[idx]
-                        cx = (col + 0.5) * stride
-                        cy = (row + 0.5) * stride
-                        x1 = (cx - dx) * scale_x
-                        y1 = (cy - dy) * scale_y
-                        x2 = (cx + dw) * scale_x
-                        y2 = (cy + dh) * scale_y
-                        bbox = [x1, y1, x2, y2]
-                    else:
-                        continue
-                else:
-                    continue
+        groups = {}
+        for i, stride in enumerate(strides):
+            s = scored[i] if i < len(scored) else None
+            b = bboxed[i] if i < len(bboxed) else None
+            k = kpsed[i] if i < len(kpsed) else None
+            if s is not None:
+                groups[stride] = (s, b, k)
 
-                # Decode keypoints
-                landmarks = []
-                if kps_key and kps_key in outputs:
-                    kps_data = outputs[kps_key].reshape(-1, 10)
-                    if idx < len(kps_data):
-                        kps = kps_data[idx]
-                        for k in range(5):
-                            lx = (kps[k * 2] + col * stride) * scale_x
-                            ly = (kps[k * 2 + 1] + row * stride) * scale_y
-                            landmarks.append([lx, ly])
-
-                detections.append((bbox, landmarks, score))
-
-        # NMS
-        if len(detections) > 1:
-            detections = self._nms(detections, iou_threshold=0.4)
-
-        return detections
+        return groups
 
     def _nms(self, detections: list, iou_threshold: float = 0.4) -> list:
         """Simple NMS on detection list."""

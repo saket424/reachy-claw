@@ -22,7 +22,7 @@ import numpy as np
 
 from ..audio import AudioCapture, WakeWordDetector
 from ..gateway import DesktopRobotClient
-from ..llm import OllamaClient, OllamaConfig
+from ..llm import OllamaClient, OllamaConfig, MONOLOGUE_SYSTEM_PROMPT
 from ..motion.head_wobbler import HeadWobbler
 from ..plugin import Plugin
 from ..stt import create_stt_backend
@@ -87,6 +87,10 @@ class ConversationPlugin(Plugin):
         self._speaking_since: float = 0.0
         self._pending_tasks: set[asyncio.Task] = set()
 
+        # Monologue mode state
+        self._monologue_mode = False
+        self._last_speech_time: float = 0.0  # for monologue auto-trigger
+
     def setup(self) -> bool:
         return True
 
@@ -130,22 +134,34 @@ class ConversationPlugin(Plugin):
                 logger.info("Running in standalone mode - no server connection")
                 return
 
+            # Monologue mode setup
+            self._monologue_mode = config.conversation_mode == "monologue"
+
             if config.llm_backend == "ollama":
                 from ..llm import DEFAULT_SYSTEM_PROMPT
+
+                if self._monologue_mode:
+                    system_prompt = MONOLOGUE_SYSTEM_PROMPT
+                    skip_emotion = True
+                else:
+                    system_prompt = config.ollama_system_prompt or DEFAULT_SYSTEM_PROMPT
+                    skip_emotion = False
 
                 ollama_cfg = OllamaConfig(
                     base_url=config.ollama_base_url,
                     model=config.ollama_model,
-                    system_prompt=config.ollama_system_prompt or DEFAULT_SYSTEM_PROMPT,
+                    system_prompt=system_prompt,
                     temperature=config.ollama_temperature,
                     max_history=config.ollama_max_history,
+                    skip_emotion_extraction=skip_emotion,
                 )
                 self._client = OllamaClient(ollama_cfg)
                 await self._client.connect()
                 self._setup_callbacks()
                 if config.gateway_warmup:
                     await self._client.warmup_session()
-                logger.info(f"Using Ollama LLM: {config.ollama_model}")
+                mode_label = " (monologue)" if self._monologue_mode else ""
+                logger.info(f"Using Ollama LLM: {config.ollama_model}{mode_label}")
             else:
                 self._client = DesktopRobotClient(config)
                 await self._client.connect()
@@ -360,6 +376,56 @@ class ConversationPlugin(Plugin):
         if self.app.config.play_emotions:
             logger.info(f"Emotion from server: {emotion}")
             self.app.emotions.queue_emotion(emotion)
+
+    # ── Monologue mode ─────────────────────────────────────────────────
+
+    def _compose_monologue_prompt(self, transcript: str | None = None) -> str:
+        """Build compact LLM input for monologue mode from speech + vision."""
+        parts = []
+        if transcript:
+            parts.append(f"[听到] {transcript}")
+
+        vision = self.app.get_plugin("vision_client")
+        if vision and getattr(vision, "_last_faces_summary", None):
+            s = vision._last_faces_summary
+            p = s[0]
+            name = p.get("identity") or "?"
+            emo = p.get("emotion", "neutral")
+            parts.append(f"[人] {name} {emo}")
+            if len(s) > 1:
+                parts.append(f"[+{len(s)-1}人]")
+        elif vision:
+            emo = getattr(vision, "_last_emotion", None)
+            if emo and emo != "neutral":
+                parts.append(f"[表情] {emo}")
+            identity = getattr(vision, "current_identity", None)
+            if identity:
+                parts.append(f"[身份] {identity}")
+
+        if not parts:
+            parts.append("[安静观察中]")
+        return "\n".join(parts)
+
+    def switch_mode(self, mode: str) -> None:
+        """Hot-switch between conversation and monologue modes."""
+        from ..llm import DEFAULT_SYSTEM_PROMPT
+
+        self._monologue_mode = mode == "monologue"
+        self.app.config.conversation_mode = mode
+
+        if isinstance(self._client, OllamaClient):
+            if self._monologue_mode:
+                self._client._config.system_prompt = MONOLOGUE_SYSTEM_PROMPT
+                self._client._config.skip_emotion_extraction = True
+            else:
+                self._client._config.system_prompt = (
+                    self.app.config.ollama_system_prompt or DEFAULT_SYSTEM_PROMPT
+                )
+                self._client._config.skip_emotion_extraction = False
+            # Reset history on mode switch
+            self._client._history.clear()
+
+        logger.info(f"Conversation mode switched to: {mode}")
 
     # ── Active robot commands (LLM tool calls) ────────────────────────
 
@@ -615,6 +681,7 @@ class ConversationPlugin(Plugin):
         streaming_stt = self._stt.supports_streaming
 
         self._set_state(ConvState.IDLE)
+        self._last_speech_time = time.monotonic()
 
         if self._client:
             await self._client.send_state_change("listening")
@@ -678,6 +745,22 @@ class ConversationPlugin(Plugin):
 
             # ── TRANSCRIBING / THINKING states: wait ──
             if self._state in (ConvState.TRANSCRIBING, ConvState.THINKING):
+                continue
+
+            # ── Monologue auto-trigger: if idle too long, generate monologue ──
+            if (
+                self._monologue_mode
+                and self._state == ConvState.IDLE
+                and self._client
+                and time.monotonic() - self._last_speech_time
+                    >= self.app.config.monologue_interval
+            ):
+                self._last_speech_time = time.monotonic()
+                prompt = self._compose_monologue_prompt(None)
+                self._spawn_task(
+                    self._process_and_send_raw(prompt),
+                    name="conversation.monologue_auto",
+                )
                 continue
 
             # ── IDLE / LISTENING states: accumulate speech ──
@@ -808,11 +891,14 @@ class ConversationPlugin(Plugin):
             return
 
         # Send to AI
+        if self._monologue_mode:
+            text = self._compose_monologue_prompt(text)
         logger.info("Sending to AI...")
         self._set_state(ConvState.THINKING)
         self._t_send = time.perf_counter()
+        self._last_speech_time = time.monotonic()
 
-        if self.app.config.play_emotions:
+        if self.app.config.play_emotions and not self._monologue_mode:
             self.app.emotions.queue_emotion("thinking")
 
         if self._client:
@@ -824,6 +910,19 @@ class ConversationPlugin(Plugin):
             logger.error(f"Error sending to AI: {e}")
             if self.app.config.play_emotions:
                 self.app.emotions.queue_emotion("sad")
+            self._set_state(ConvState.IDLE)
+
+    async def _process_and_send_raw(self, text: str) -> None:
+        """Send pre-composed text directly to LLM (used by monologue timer)."""
+        if not text or not self._client:
+            return
+        logger.info(f"Monologue prompt: {text[:60]}")
+        self._set_state(ConvState.THINKING)
+        self._t_send = time.perf_counter()
+        try:
+            await self._client.send_message_streaming(text)
+        except Exception as e:
+            logger.error(f"Monologue send error: {e}")
             self._set_state(ConvState.IDLE)
 
     # ── Pipeline task 2: Sentence accumulator ─────────────────────────

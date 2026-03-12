@@ -37,6 +37,13 @@ class ReachyClawApp:
 
         self._plugins: List[Plugin] = []
 
+    def get_plugin(self, name: str) -> "Plugin | None":
+        """Find a registered plugin by name."""
+        for p in self._plugins:
+            if p.name == name:
+                return p
+        return None
+
     @staticmethod
     def _patch_gstreamer() -> None:
         """Patch SDK GStreamer for Docker/Jetson.

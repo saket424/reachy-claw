@@ -34,6 +34,23 @@ DEFAULT_SYSTEM_PROMPT = """\
 示例：你好呀！很高兴见到你！[happy]
 回答控制在1-3句话。"""
 
+MONOLOGUE_SYSTEM_PROMPT = """\
+你是Reachy，一个好奇的小机器人。你正在观察面前的人，产生内心独白。
+
+你的输入包含：
+- 你听到的话（如果有）
+- 你看到的用户表情
+- 你识别出的用户身份（如果有）
+
+根据这些信息，输出1-2句简短的内心独白。不要输出情绪标签。
+用第一人称，像在自言自语。
+
+示例：
+- "这个人看起来心情不错，嘴角一直在上扬..."
+- "他好像在思考什么，眉头皱起来了。"
+- "哦，是小明！他今天看起来很开心啊。"
+"""
+
 
 @dataclass
 class OllamaConfig:
@@ -45,6 +62,7 @@ class OllamaConfig:
     temperature: float = 0.7
     # Simple sliding window: keep last N messages (0 = no history)
     max_history: int = 0
+    skip_emotion_extraction: bool = False  # monologue mode: no emotion tags
 
 
 class OllamaClient:
@@ -178,7 +196,7 @@ class OllamaClient:
                     full_text += token
 
                     # Stream tokens immediately, stripping any emotion tags
-                    clean_token = _EMOTION_RE.sub("", token)
+                    clean_token = token if self._config.skip_emotion_extraction else _EMOTION_RE.sub("", token)
                     if clean_token and self.callbacks.on_stream_delta:
                         await _maybe_await(
                             self.callbacks.on_stream_delta(clean_token, run_id)
@@ -200,10 +218,13 @@ class OllamaClient:
             return
 
         # Extract emotion from the complete response (tag is at the end)
-        clean_full, emotion = _extract_emotion(full_text)
-        clean_full = clean_full.strip()
-        if emotion and self.callbacks.on_emotion:
-            await _maybe_await(self.callbacks.on_emotion(emotion))
+        if self._config.skip_emotion_extraction:
+            clean_full = full_text.strip()
+        else:
+            clean_full, emotion = _extract_emotion(full_text)
+            clean_full = clean_full.strip()
+            if emotion and self.callbacks.on_emotion:
+                await _maybe_await(self.callbacks.on_emotion(emotion))
 
         # Update history
         if self._config.max_history > 0:

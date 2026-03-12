@@ -1,6 +1,6 @@
-// ── Emotion Mirror Dashboard ─────────────────────────────────────────
+// ── Emotion Mirror Dashboard — Fullscreen HUD ──────────────────────
 
-// ── Config ───────────────────────────────────────────────────────────
+// ── Config ──────────────────────────────────────────────────────────
 const VISION_HOST = location.hostname + ':8630';
 const VISION_API = `http://${VISION_HOST}`;
 const DASHBOARD_WS = `ws://${location.host}/ws`;
@@ -15,25 +15,28 @@ const EMOTION_COLORS = {
     Contempt: '#a0a0c0', Disgust: '#8b5e3c',
 };
 
-// ── State ────────────────────────────────────────────────────────────
+// ── State ───────────────────────────────────────────────────────────
 let visionWs = null;
 let dashboardWs = null;
 let latestFaces = null;
 let currentLlmText = '';
+let lastLlmText = '';
 let currentRunId = null;
-let logEntries = [];
+let isStreaming = false;
 let currentMode = 'conversation';
 let uploadFiles = [];
+let asrIdleTimer = null;
 
-// ── DOM refs ─────────────────────────────────────────────────────────
+// ── DOM refs ────────────────────────────────────────────────────────
 const videoEl = document.getElementById('video-stream');
 const canvasEl = document.getElementById('overlay-canvas');
 const ctx = canvasEl.getContext('2d');
 const noVideoEl = document.getElementById('no-video');
 const asrTextEl = document.getElementById('asr-text');
-const logEntriesEl = document.getElementById('log-entries');
+const monologueTextEl = document.getElementById('monologue-text');
+const monologueBubble = document.getElementById('monologue-bubble');
 
-// ── Toast ────────────────────────────────────────────────────────────
+// ── Toast ───────────────────────────────────────────────────────────
 function showToast(msg, isError = false) {
     const el = document.getElementById('toast');
     el.textContent = msg;
@@ -41,7 +44,7 @@ function showToast(msg, isError = false) {
     setTimeout(() => { el.className = 'toast'; }, 2500);
 }
 
-// ── Vision WebSocket (face detection) ────────────────────────────────
+// ── Vision WebSocket (face detection) ───────────────────────────────
 let visionRetry = 1000;
 
 function connectVision() {
@@ -73,7 +76,7 @@ function connectVision() {
     visionWs.onerror = () => visionWs.close();
 }
 
-// ── Dashboard WebSocket (ASR, LLM, state) ────────────────────────────
+// ── Dashboard WebSocket (ASR, LLM, state) ───────────────────────────
 let dashRetry = 1000;
 
 function connectDashboard() {
@@ -106,30 +109,34 @@ function connectDashboard() {
 function handleDashboardMsg(msg) {
     switch(msg.type) {
         case 'asr_partial':
-            asrTextEl.textContent = msg.text;
+            asrTextEl.innerHTML = msg.text;
             asrTextEl.className = 'asr-text partial';
+            resetAsrIdleTimer();
             break;
 
         case 'asr_final':
-            asrTextEl.textContent = msg.text;
+            asrTextEl.innerHTML = msg.text;
             asrTextEl.className = 'asr-text';
+            resetAsrIdleTimer();
             break;
 
         case 'llm_delta':
             if (msg.run_id !== currentRunId) {
                 currentRunId = msg.run_id;
                 currentLlmText = '';
-                addLogEntry();
+                isStreaming = true;
             }
             currentLlmText += msg.text;
-            updateCurrentLog();
+            updateMonologue();
             break;
 
         case 'llm_end':
             if (msg.run_id === currentRunId) {
                 currentLlmText = msg.full_text;
-                updateCurrentLog(true);
+                lastLlmText = currentLlmText;
+                isStreaming = false;
                 currentRunId = null;
+                updateMonologue();
             }
             break;
 
@@ -152,101 +159,48 @@ function handleDashboardMsg(msg) {
     }
 }
 
-// ── Observation Log ──────────────────────────────────────────────────
-function addLogEntry() {
-    const now = new Date();
-    const ts = now.toTimeString().slice(0, 8);
-    logEntries.push({ timestamp: ts, text: '', done: false });
-    renderLog();
+// ── ASR idle timer ──────────────────────────────────────────────────
+function resetAsrIdleTimer() {
+    if (asrIdleTimer) clearTimeout(asrIdleTimer);
+    asrIdleTimer = setTimeout(() => {
+        asrTextEl.innerHTML = '<i>\u503E\u542C\u4E2D...</i>';
+        asrTextEl.className = 'asr-text idle';
+    }, 5000);
 }
 
-function updateCurrentLog(done = false) {
-    if (logEntries.length === 0) addLogEntry();
-    const last = logEntries[logEntries.length - 1];
-    last.text = currentLlmText;
-    last.done = done;
-    renderLog();
-}
-
-function renderLog() {
-    if (logEntries.length === 0) {
-        logEntriesEl.innerHTML = '<div class="log-entry" style="color: var(--text-dim)">Waiting for conversation...</div>';
-        return;
+// ── Monologue bubble ────────────────────────────────────────────────
+function updateMonologue() {
+    if (isStreaming) {
+        monologueTextEl.innerHTML = currentLlmText + '<span class="typing-cursor"></span>';
+        monologueTextEl.className = 'monologue-text';
+    } else {
+        const text = lastLlmText || '...';
+        monologueTextEl.textContent = text;
+        monologueTextEl.className = 'monologue-text idle';
     }
-
-    if (logEntries.length > 20) logEntries = logEntries.slice(-20);
-
-    let html = '';
-    for (let i = 0; i < logEntries.length; i++) {
-        const entry = logEntries[i];
-        const isCurrent = i === logEntries.length - 1 && !entry.done;
-        const cls = isCurrent ? 'log-entry current' : 'log-entry';
-        const cursor = isCurrent ? '<span class="typing-cursor"></span>' : '';
-        html += `<div class="${cls}">
-            <div class="timestamp">${entry.timestamp}</div>
-            <div>${entry.text}${cursor}</div>
-        </div>`;
-    }
-    logEntriesEl.innerHTML = html;
-
-    const container = document.getElementById('observation-log');
-    container.scrollTop = container.scrollHeight;
 }
 
-// ── State & Robot State ──────────────────────────────────────────────
+// ── State & Robot State ─────────────────────────────────────────────
 function updateState(state) {
     const el = document.getElementById('robot-state');
-    el.textContent = state;
-    el.dataset.state = state;
+    if (el) {
+        el.textContent = state;
+        el.dataset.state = state;
+    }
 }
 
 function updateRobotState(msg) {
     // Mode
     if (msg.mode) {
         currentMode = msg.mode;
-        document.getElementById('robot-mode').textContent = msg.mode;
         syncModeUI();
     }
 
-    // Emotion
-    const emotionEl = document.getElementById('robot-emotion');
-    const color = EMOTION_COLORS[msg.emotion] || '#3498db';
-    emotionEl.innerHTML = `<span class="emotion-tag" style="color:${color}; border-color:${color}40; background:${color}15">${msg.emotion}</span>`;
-
-    // Head
-    document.getElementById('robot-head').textContent =
-        `Y:${msg.head.yaw.toFixed(1)} P:${msg.head.pitch.toFixed(1)} R:${msg.head.roll.toFixed(1)}`;
-
-    // Antenna
-    document.getElementById('robot-antenna').textContent =
-        `L:${msg.antenna.left.toFixed(1)} R:${msg.antenna.right.toFixed(1)}`;
-
-    // Tracking
-    const trackEl = document.getElementById('robot-tracking');
-    trackEl.textContent = `${msg.tracking.source} (${(msg.tracking.confidence * 100).toFixed(0)}%)`;
-    trackEl.className = msg.tracking.source === 'face' ? 'value highlight' : 'value';
-
-    // Speaking
-    const speakEl = document.getElementById('robot-speaking');
-    speakEl.textContent = msg.speaking ? 'yes' : 'no';
-    speakEl.className = msg.speaking ? 'value highlight' : 'value';
-
     // Robot connected indicator
     document.getElementById('dot-robot').className = 'dot live';
-
-    // Emotion mapping
-    const mappingEl = document.getElementById('emotion-mapping');
-    const descEl = document.getElementById('mapping-desc');
-    if (msg.emotion_mapping) {
-        mappingEl.style.display = 'block';
-        const m = msg.emotion_mapping;
-        descEl.textContent = `${m.description} | Antenna: L${m.antenna_target.left} R${m.antenna_target.right}`;
-    } else {
-        mappingEl.style.display = 'none';
-    }
 }
 
-// ── Canvas overlay (face detection) ──────────────────────────────────
+// ── Canvas overlay (face detection) ─────────────────────────────────
 function drawOverlay() {
     const rect = videoEl.getBoundingClientRect();
     canvasEl.width = rect.width;
@@ -275,28 +229,28 @@ function drawOverlay() {
         ctx.lineWidth = 2;
         ctx.globalAlpha = 0.8;
 
-        // Top-left
+        // Top-left corner
         ctx.beginPath();
         ctx.moveTo(bx, by + cornerLen);
         ctx.lineTo(bx, by);
         ctx.lineTo(bx + cornerLen, by);
         ctx.stroke();
 
-        // Top-right
+        // Top-right corner
         ctx.beginPath();
         ctx.moveTo(bx + bw - cornerLen, by);
         ctx.lineTo(bx + bw, by);
         ctx.lineTo(bx + bw, by + cornerLen);
         ctx.stroke();
 
-        // Bottom-left
+        // Bottom-left corner
         ctx.beginPath();
         ctx.moveTo(bx, by + bh - cornerLen);
         ctx.lineTo(bx, by + bh);
         ctx.lineTo(bx + cornerLen, by + bh);
         ctx.stroke();
 
-        // Bottom-right
+        // Bottom-right corner
         ctx.beginPath();
         ctx.moveTo(bx + bw - cornerLen, by + bh);
         ctx.lineTo(bx + bw, by + bh);
@@ -305,23 +259,52 @@ function drawOverlay() {
 
         ctx.globalAlpha = 1.0;
 
-        // Labels
-        ctx.font = '12px monospace';
-        ctx.fillStyle = color;
+        // ── Identity label (above bbox) ──
+        const identity = face.identity;
+        if (identity && identity !== '?') {
+            ctx.font = 'bold 12px monospace';
+            const idMetrics = ctx.measureText(identity);
+            const idW = idMetrics.width + 12;
+            const idH = 18;
+            let idY = by - idH - 4;
+            if (idY < 2) idY = by + 4;
+            const idX = bx + (bw - idW) / 2;
 
-        const identity = face.identity || '?';
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            roundRect(ctx, idX, idY, idW, idH, 4);
+            ctx.fill();
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(identity, idX + 6, idY + 13);
+        }
+
+        // ── Emotion pill (below bbox) ──
+        const emotion = face.emotion || 'neutral';
         const conf = ((face.emotion_confidence || 0) * 100).toFixed(0);
-        let labelY = by - 6;
-        if (labelY < 14) labelY = by + bh + 16;
+        const pillText = conf > 0 ? `${emotion} ${conf}%` : emotion;
+        ctx.font = '11px monospace';
+        const pillMetrics = ctx.measureText(pillText);
+        const pillW = pillMetrics.width + 16;
+        const pillH = 20;
+        const pillX = bx + (bw - pillW) / 2;
+        let pillY = by + bh + 6;
+        if (pillY + pillH > ch - 4) pillY = by + bh - pillH - 4;
 
-        const labelText = `${identity} | ${face.emotion} ${conf}%`;
-        const metrics = ctx.measureText(labelText);
-        ctx.fillStyle = 'rgba(0,0,0,0.6)';
-        ctx.fillRect(bx - 1, labelY - 12, metrics.width + 6, 16);
+        // Pill background
+        const pillAlpha = 0.7;
+        ctx.globalAlpha = pillAlpha;
+        ctx.fillStyle = hexToRgba(color, 0.25);
+        roundRect(ctx, pillX, pillY, pillW, pillH, 10);
+        ctx.fill();
+        ctx.strokeStyle = hexToRgba(color, 0.5);
+        ctx.lineWidth = 1;
+        roundRect(ctx, pillX, pillY, pillW, pillH, 10);
+        ctx.stroke();
+
+        ctx.globalAlpha = 1.0;
         ctx.fillStyle = color;
-        ctx.fillText(labelText, bx + 2, labelY);
+        ctx.fillText(pillText, pillX + 8, pillY + 14);
 
-        // 5-point landmarks
+        // ── 5-point landmarks ──
         if (face.landmarks) {
             ctx.fillStyle = '#00d2ff';
             for (const [lx, ly] of face.landmarks) {
@@ -335,7 +318,29 @@ function drawOverlay() {
     requestAnimationFrame(drawOverlay);
 }
 
-// ── MJPEG video ──────────────────────────────────────────────────────
+// ── Canvas helpers ──────────────────────────────────────────────────
+function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+}
+
+function hexToRgba(hex, alpha) {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// ── MJPEG video ─────────────────────────────────────────────────────
 function setupVideo() {
     const streamUrl = `http://${VISION_HOST}/stream`;
     videoEl.src = streamUrl;
@@ -352,7 +357,7 @@ function setupVideo() {
     };
 }
 
-// ── Settings Panel ───────────────────────────────────────────────────
+// ── Settings Panel ──────────────────────────────────────────────────
 function initSettings() {
     const overlay = document.getElementById('settings-overlay');
     document.getElementById('settings-open').onclick = () => {
@@ -427,7 +432,7 @@ function setMode(mode) {
     dashboardWs.send(JSON.stringify({ type: 'set_mode', mode }));
 }
 
-// ── Face Management API ──────────────────────────────────────────────
+// ── Face Management API ─────────────────────────────────────────────
 async function loadFaces() {
     try {
         const res = await fetch(`${VISION_API}/api/faces`);
@@ -560,7 +565,7 @@ async function importFaces() {
     input.value = '';
 }
 
-// ── Init ─────────────────────────────────────────────────────────────
+// ── Init ────────────────────────────────────────────────────────────
 function init() {
     setupVideo();
     connectVision();

@@ -14,7 +14,7 @@ WORKDIR /build
 COPY . .
 
 RUN pip install --no-cache-dir --prefix=/install onnxruntime
-RUN pip install --no-cache-dir --prefix=/install -e ".[audio,mediapipe-vision]"
+RUN pip install --no-cache-dir --prefix=/install -e ".[audio,mediapipe-vision,remote-vision,dashboard]"
 
 # Install silero-vad WITHOUT torch — only need the Python wrapper + ONNX model
 RUN pip install --no-cache-dir --prefix=/install silero-vad --no-deps

@@ -1,18 +1,17 @@
-"""Main server: shared memory reader + inference pipeline + outputs.
+"""Main server: GStreamer camera capture + inference pipeline + outputs.
 
-Reads frames from /dev/shm, runs TensorRT inference, and publishes:
+Captures frames directly from the camera via GStreamer with hardware-
+accelerated decode/resize/encode, runs TensorRT inference, and publishes:
 1. ZMQ PUB → reachy-claw (structured data)
 2. WebSocket → browser (JSON detections)
 3. HTTP API → face DB CRUD + health + stats
-4. Video stream → browser (MJPEG or NVENC)
+4. Video stream → browser (MJPEG from HW encoder)
 """
 
 import asyncio
 import json
 import logging
-import mmap
 import os
-import struct
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -31,10 +30,6 @@ logger = logging.getLogger(__name__)
 _zmq = None
 _msgpack = None
 
-# Frame header format (must match VisionClientPlugin)
-_SHM_HEADER_FMT = "<IIII"
-_SHM_HEADER_SIZE = struct.calcsize(_SHM_HEADER_FMT)
-
 
 class VisionService:
     """Core vision inference service."""
@@ -46,6 +41,7 @@ class VisionService:
         self.pipeline = None
         self.face_db = None
         self.streamer = None
+        self.capture = None
         self._zmq_pub = None
         self._zmq_ctx = None
         self._ws_clients: set = set()
@@ -56,10 +52,11 @@ class VisionService:
         self._inference_ms = 0.0
         self._frame_count = 0
         self._last_stats_time = time.monotonic()
-        self._last_frame_id = 0
+        self._frame_id = 0
 
     def init(self):
         """Initialize all components."""
+        from .capture import GstCameraCapture
         from .config import config
         from .face_database import FaceDatabase
         from .stream import VideoStreamer
@@ -73,9 +70,8 @@ class VisionService:
         # Face database
         self.face_db = FaceDatabase(config.DATA_DIR)
 
-        # Video streamer
+        # Video streamer (simple JPEG buffer now)
         self.streamer = VideoStreamer(config.STREAM_PORT)
-        self.streamer.start_gstreamer()
 
         # ZMQ publisher
         self._zmq_ctx = zmq.Context()
@@ -83,7 +79,8 @@ class VisionService:
         self._zmq_pub.bind(f"tcp://0.0.0.0:{config.ZMQ_PUB_PORT}")
         logger.info(f"ZMQ PUB bound on port {config.ZMQ_PUB_PORT}")
 
-        # TRT engines (may take 20-60s on first boot)
+        # TRT engines first (may take 20-60s on first boot)
+        # Must build before camera start — nvv4l2decoder takes GPU memory
         try:
             from .models import load_engines
 
@@ -99,41 +96,18 @@ class VisionService:
             logger.error(f"Failed to load TRT engines: {e}")
             logger.warning("Running in passthrough mode (no inference)")
 
-    def read_shm_frame(self) -> tuple[np.ndarray | None, int]:
-        """Read a frame from shared memory.
-
-        Returns (frame_bgr, frame_id) or (None, 0).
-        """
-        path = self.config.SHM_FRAME_PATH
-        if not os.path.exists(path):
-            return None, 0
-
-        try:
-            fd = os.open(path, os.O_RDONLY)
-            file_size = os.fstat(fd).st_size
-            if file_size < _SHM_HEADER_SIZE:
-                os.close(fd)
-                return None, 0
-
-            mm = mmap.mmap(fd, file_size, access=mmap.ACCESS_READ)
-            os.close(fd)
-
-            header = mm[:_SHM_HEADER_SIZE]
-            w, h, c, frame_id = struct.unpack(_SHM_HEADER_FMT, header)
-
-            expected = _SHM_HEADER_SIZE + (w * h * c)
-            if file_size < expected:
-                mm.close()
-                return None, 0
-
-            data = mm[_SHM_HEADER_SIZE:expected]
-            frame = np.frombuffer(data, dtype=np.uint8).reshape(h, w, c).copy()
-            mm.close()
-            return frame, frame_id
-
-        except Exception as e:
-            logger.debug(f"SHM read error: {e}")
-            return None, 0
+        # Camera capture via GStreamer (after TRT engines to avoid GPU memory contention)
+        self.capture = GstCameraCapture(
+            device=config.CAMERA_DEVICE,
+            cam_width=config.CAMERA_WIDTH,
+            cam_height=config.CAMERA_HEIGHT,
+            cam_fps=config.CAMERA_FPS,
+            inf_width=config.INPUT_WIDTH,
+            inf_height=config.INPUT_HEIGHT,
+            stream_width=config.STREAM_WIDTH,
+        )
+        if not self.capture.start():
+            logger.error("Camera capture failed to start")
 
     def process_and_publish(self, frame: np.ndarray, frame_id: int):
         """Run inference and publish results to all outputs."""
@@ -216,9 +190,11 @@ class VisionService:
                     dead.add(ws)
             self._ws_clients -= dead
 
-        # Video stream
-        if self.streamer:
-            self.streamer.push_frame(frame)
+        # Push HW-encoded JPEG to streamer
+        if self.streamer and self.capture:
+            jpeg = self.capture.get_stream_jpeg()
+            if jpeg:
+                self.streamer.set_jpeg(jpeg)
 
     def run_loop(self):
         """Main inference loop (runs in thread)."""
@@ -228,13 +204,17 @@ class VisionService:
         while self._running:
             t0 = time.monotonic()
 
-            frame, frame_id = self.read_shm_frame()
-            if frame is None or frame_id == self._last_frame_id:
-                time.sleep(0.005)
+            if not self.capture:
+                time.sleep(0.1)
                 continue
 
-            self._last_frame_id = frame_id
-            self.process_and_publish(frame, frame_id)
+            frame = self.capture.get_inference_frame()
+            if frame is None:
+                time.sleep(0.01)
+                continue
+
+            self._frame_id += 1
+            self.process_and_publish(frame, self._frame_id)
 
             elapsed = time.monotonic() - t0
             sleep_time = target_interval - elapsed
@@ -244,6 +224,8 @@ class VisionService:
     def close(self):
         """Cleanup."""
         self._running = False
+        if self.capture:
+            self.capture.close()
         if self._zmq_pub:
             self._zmq_pub.close()
         if self._zmq_ctx:
@@ -275,7 +257,7 @@ async def lifespan(app):
 
 # ── FastAPI app ──────────────────────────────────────────────────────
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, File, Form, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -292,6 +274,7 @@ async def health():
     return {
         "status": "ok",
         "pipeline": service.pipeline is not None,
+        "capture": service.capture is not None and service.capture._running,
         "fps": round(service._fps, 1),
     }
 
@@ -318,7 +301,10 @@ async def enroll_face(name: str = Query(...)):
     if not service.face_db or not service.pipeline:
         return {"error": "Service not ready"}, 503
 
-    frame, _ = service.read_shm_frame()
+    if not service.capture:
+        return {"error": "Camera not available"}, 503
+
+    frame = service.capture.get_inference_frame()
     if frame is None:
         return {"error": "No frame available"}, 400
 
@@ -349,6 +335,91 @@ async def delete_face(name: str):
     return {"error": "Face not found"}, 404
 
 
+@app.post("/api/faces/enroll-image")
+async def enroll_face_from_image(name: str = Form(...), image: UploadFile = File(...)):
+    """Register a face from an uploaded image file."""
+    if not service.face_db or not service.pipeline:
+        return {"error": "Service not ready"}, 503
+
+    contents = await image.read()
+    if not contents:
+        return {"error": "Empty file"}, 400
+    arr = np.frombuffer(contents, dtype=np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if frame is None:
+        return {"error": "Invalid image"}, 400
+
+    results = service.pipeline.process_frame(frame)
+    if not results:
+        return {"error": "No face detected in image"}, 400
+
+    primary = max(
+        results,
+        key=lambda r: (r.bbox[2] - r.bbox[0]) * (r.bbox[3] - r.bbox[1]),
+    )
+    if not primary.embedding:
+        return {"error": "Face embedding extraction failed"}, 500
+
+    embedding = np.array(primary.embedding, dtype=np.float32)
+    service.face_db.enroll(name, embedding)
+    return {"status": "enrolled", "name": name}
+
+
+@app.get("/api/faces/export")
+async def export_faces():
+    """Export all face data as a zip archive."""
+    import io
+    import zipfile
+
+    if not service.face_db:
+        return {"error": "Service not ready"}, 503
+
+    buf = io.BytesIO()
+    data_dir = service.face_db._dir
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for fpath in data_dir.iterdir():
+            if fpath.suffix in (".json", ".npy"):
+                zf.write(fpath, fpath.name)
+
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=faces.zip"},
+    )
+
+
+@app.post("/api/faces/import")
+async def import_faces(file: UploadFile = File(...)):
+    """Import face data from a zip archive (replaces existing)."""
+    import io
+    import zipfile
+
+    if not service.face_db:
+        return {"error": "Service not ready"}, 503
+
+    contents = await file.read()
+    buf = io.BytesIO(contents)
+    if not zipfile.is_zipfile(buf):
+        return {"error": "Invalid zip file"}, 400
+
+    data_dir = service.face_db._dir
+    buf.seek(0)
+    with zipfile.ZipFile(buf, "r") as zf:
+        for name in zf.namelist():
+            # Only extract .json and .npy files, no path traversal
+            if name != os.path.basename(name):
+                continue
+            if not name.endswith((".json", ".npy")):
+                continue
+            zf.extract(name, data_dir)
+
+    # Reload database
+    service.face_db._faces.clear()
+    service.face_db._load()
+    return {"status": "imported", "faces": service.face_db.list_faces()}
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -366,17 +437,21 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.get("/stream")
 async def mjpeg_stream():
-    """MJPEG stream fallback for browsers."""
+    """MJPEG stream for browsers."""
 
     async def generate():
-        while True:
-            jpg = service.streamer.get_jpeg() if service.streamer else None
-            if jpg:
-                yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
-                )
-            await asyncio.sleep(0.033)  # ~30fps
+        try:
+            while True:
+                jpg = service.streamer.get_jpeg() if service.streamer else None
+                if jpg:
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
+                    )
+                await asyncio.sleep(0.1)  # ~10fps matches inference rate
+        finally:
+            if service.streamer and not service._ws_clients:
+                service.streamer._has_clients = False
 
     return StreamingResponse(
         generate(),

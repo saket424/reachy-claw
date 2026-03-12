@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import struct
 import time
 from unittest.mock import MagicMock, patch
 
@@ -14,8 +13,6 @@ from reachy_claw.app import ReachyClawApp
 from reachy_claw.plugins.vision_client_plugin import (
     VisionClientPlugin,
     _EMOTION_REMAP,
-    _SHM_HEADER_FMT,
-    _SHM_HEADER_SIZE,
 )
 
 
@@ -31,7 +28,6 @@ def vision_config():
         vision_deadzone=0.02,
         vision_face_lost_delay=2.0,
         vision_service_url="tcp://127.0.0.1:8631",
-        vision_shm_path="/dev/shm/vision_frame",
         vision_emotion_threshold=0.6,
         vision_emotion_cooldown=3.0,
         vision_identity_threshold=0.4,
@@ -51,12 +47,6 @@ class TestVisionClientSetup:
         app.reachy = None
         plugin = VisionClientPlugin(app)
         assert plugin.setup() is False
-
-    def test_skips_without_sdk_camera(self, vision_app):
-        vision_app.reachy.media_manager.camera = None
-        plugin = VisionClientPlugin(vision_app)
-        with patch("time.sleep"):
-            assert plugin.setup() is False
 
     def test_skips_without_zmq(self, vision_app):
         plugin = VisionClientPlugin(vision_app)
@@ -81,7 +71,6 @@ class TestVisionClientSetup:
 class TestVisionClientConfig:
     def test_reads_config_values(self, vision_app):
         plugin = VisionClientPlugin(vision_app)
-        assert plugin._shm_path == "/dev/shm/vision_frame"
         assert plugin._zmq_url == "tcp://127.0.0.1:8631"
         assert plugin._max_yaw == 25.0
         assert plugin._max_pitch == 15.0
@@ -148,24 +137,12 @@ class TestEmotionRemap:
         assert _EMOTION_REMAP["surprised"] == "surprised"
 
 
-class TestShmHeader:
-    def test_header_format(self):
-        w, h, c, fid = 640, 480, 3, 42
-        header = struct.pack(_SHM_HEADER_FMT, w, h, c, fid)
-        assert len(header) == _SHM_HEADER_SIZE
-        assert _SHM_HEADER_SIZE == 16
-
-        uw, uh, uc, ufid = struct.unpack(_SHM_HEADER_FMT, header)
-        assert (uw, uh, uc, ufid) == (w, h, c, fid)
-
-
 class TestConfigYamlMapping:
     def test_vision_service_fields_in_yaml_map(self):
         from reachy_claw.config import _YAML_FIELD_MAP
 
         assert ("vision", "service_url") in _YAML_FIELD_MAP
         assert _YAML_FIELD_MAP[("vision", "service_url")] == "vision_service_url"
-        assert ("vision", "shm_path") in _YAML_FIELD_MAP
         assert ("vision", "emotion_threshold") in _YAML_FIELD_MAP
         assert ("vision", "emotion_cooldown") in _YAML_FIELD_MAP
         assert ("vision", "identity_threshold") in _YAML_FIELD_MAP
@@ -173,7 +150,6 @@ class TestConfigYamlMapping:
     def test_config_defaults(self):
         cfg = Config()
         assert cfg.vision_service_url == "tcp://127.0.0.1:8631"
-        assert cfg.vision_shm_path == "/dev/shm/vision_frame"
         assert cfg.vision_emotion_threshold == 0.6
         assert cfg.vision_emotion_cooldown == 3.0
         assert cfg.vision_identity_threshold == 0.4

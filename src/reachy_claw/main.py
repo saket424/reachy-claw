@@ -287,7 +287,8 @@ async def async_main(config: Config) -> int:
     # Start health endpoint for container orchestration
     from reachy_claw.healthcheck import start_health_server
 
-    asyncio.create_task(start_health_server(app, port=8640))
+    health_port = 8641 if config.dashboard_enabled else 8640
+    asyncio.create_task(start_health_server(app, port=health_port))
 
     # Connect robot
     app.connect_robot()

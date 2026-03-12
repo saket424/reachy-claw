@@ -8,77 +8,44 @@
 </head>
 <body>
 
-<div class="header">
-    <h1>Emotion Mirror</h1>
-    <div class="header-right">
-        <div class="status-badges">
+<div class="hud">
+    <img id="video-stream" alt="">
+    <canvas id="overlay-canvas"></canvas>
+
+    <div class="status-bar">
+        <span class="status-title">EMOTION MIRROR</span>
+        <div class="status-dots">
             <div class="badge"><span class="dot" id="dot-jetson"></span>Jetson</div>
-            <div class="badge"><span class="dot" id="dot-robot"></span>Reachy Mini</div>
+            <div class="badge"><span class="dot" id="dot-robot"></span>Robot</div>
             <div class="badge"><span class="dot" id="dot-vision"></span>Vision</div>
             <div class="badge"><span class="dot live" id="dot-live"></span>LIVE</div>
         </div>
-        <button class="settings-btn" id="settings-open">
-            <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/></svg>
-        </button>
+        <div class="status-state">
+            <span class="state-indicator" id="robot-state" data-state="idle">idle</span>
+        </div>
+    </div>
+
+    <button class="settings-btn" id="settings-open">
+        <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/></svg>
+    </button>
+
+    <div class="monologue-area">
+        <div class="monologue-bubble" id="monologue-bubble">
+            <div class="monologue-text" id="monologue-text">...</div>
+        </div>
+        <img class="monologue-avatar" src="/static/reachy-avatar.png" alt="Reachy">
+    </div>
+
+    <div class="asr-bar">
+        <svg class="asr-mic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+        <span class="asr-label">ASR</span>
+        <span class="asr-text" id="asr-text"><i>&#20542;&#21548;&#20013;...</i></span>
     </div>
 </div>
 
-<div class="main">
-    <div class="video-panel">
-        <div class="hud-corner tl"></div>
-        <div class="hud-corner tr"></div>
-        <div class="hud-corner bl"></div>
-        <div class="hud-corner br"></div>
-        <img id="video-stream" alt="" style="display:none;">
-        <canvas id="overlay-canvas"></canvas>
-        <div class="no-video" id="no-video">
-            <div class="icon">&#x1f4f7;</div>
-            <div>Connecting to vision service...</div>
-        </div>
-    </div>
-
-    <div class="sidebar">
-        <div class="observation-log" id="observation-log">
-            <h2>Observation Log</h2>
-            <div id="log-entries">
-                <div class="log-entry" style="color: var(--text-dim)">Waiting for conversation...</div>
-            </div>
-        </div>
-
-        <div class="panel-section">
-            <h2>Robot State</h2>
-            <div class="state-grid">
-                <span class="label">State</span>
-                <span class="value"><span class="state-indicator" id="robot-state" data-state="idle">idle</span></span>
-
-                <span class="label">Mode</span>
-                <span class="value" id="robot-mode">--</span>
-
-                <span class="label">Emotion</span>
-                <span class="value" id="robot-emotion"><span class="emotion-tag">neutral</span></span>
-
-                <span class="label">Head</span>
-                <span class="value" id="robot-head">Y:0.0 P:0.0 R:0.0</span>
-
-                <span class="label">Antenna</span>
-                <span class="value" id="robot-antenna">L:0.0 R:0.0</span>
-
-                <span class="label">Tracking</span>
-                <span class="value" id="robot-tracking">none</span>
-
-                <span class="label">Speaking</span>
-                <span class="value" id="robot-speaking">no</span>
-            </div>
-            <div class="emotion-mapping" id="emotion-mapping" style="display:none">
-                <span class="mapping-desc" id="mapping-desc"></span>
-            </div>
-        </div>
-    </div>
-</div>
-
-<div class="asr-bar">
-    <span class="asr-label">ASR</span>
-    <span class="asr-text" id="asr-text">--</span>
+<div class="no-video" id="no-video">
+    <div class="icon">&#x1f4f7;</div>
+    <div>Connecting to vision service...</div>
 </div>
 
 <!-- Settings Overlay -->

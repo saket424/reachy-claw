@@ -1,13 +1,12 @@
 """VisionClientPlugin -- remote TensorRT vision service integration.
 
-Captures frames from the SDK camera, writes them to shared memory for
-the vision-trt container, and receives inference results via ZMQ SUB
-to drive head tracking and emotion mapping.
+Receives inference results from the vision-trt container via ZMQ SUB
+to drive head tracking and emotion mapping.  The vision-trt container
+captures camera frames directly via GStreamer (no shared memory needed).
 """
 
 import asyncio
 import logging
-import struct
 import time
 
 import numpy as np
@@ -16,10 +15,6 @@ from ..motion.head_target import HeadTarget
 from ..plugin import Plugin
 
 logger = logging.getLogger(__name__)
-
-# Shared memory frame header: width(u32) + height(u32) + channels(u32) + frame_id(u32)
-_SHM_HEADER_FMT = "<IIII"
-_SHM_HEADER_SIZE = struct.calcsize(_SHM_HEADER_FMT)
 
 # HSEmotion output → EmotionMapper key
 _EMOTION_REMAP = {
@@ -48,14 +43,13 @@ _EMOTION_REMAP = {
 
 
 class VisionClientPlugin(Plugin):
-    """Remote vision service client: shm frame publisher + ZMQ result consumer."""
+    """Remote vision service client: ZMQ result consumer."""
 
     name = "vision_client"
 
     def __init__(self, app):
         super().__init__(app)
         cfg = app.config
-        self._shm_path = cfg.vision_shm_path
         self._zmq_url = cfg.vision_service_url
         self._max_yaw = cfg.vision_max_yaw
         self._max_pitch = cfg.vision_max_pitch
@@ -65,12 +59,6 @@ class VisionClientPlugin(Plugin):
         self._face_lost_delay = cfg.vision_face_lost_delay
         self._emotion_threshold = cfg.vision_emotion_threshold
         self._emotion_cooldown = cfg.vision_emotion_cooldown
-
-        # Frame publisher state
-        self._frame_id = 0
-        self._shm_fd = None
-        self._shm_mmap = None
-        self._shm_size = 0
 
         # Smoothing state (same as FaceTrackerPlugin)
         self._smooth_x = 0.0
@@ -91,25 +79,7 @@ class VisionClientPlugin(Plugin):
         self._last_faces_summary: list[dict] = []
 
     def setup(self) -> bool:
-        """Check SDK camera and ZMQ availability."""
-        # Check SDK camera
-        reachy = self.app.reachy
-        if reachy is None:
-            logger.warning("No robot connection, vision client skipped")
-            return False
-
-        for attempt in range(5):
-            media = getattr(reachy, "media_manager", None)
-            if media and getattr(media, "camera", None) is not None:
-                logger.info("SDK camera available for vision client")
-                break
-            if attempt < 4:
-                import time as _time
-                _time.sleep(0.5)
-        else:
-            logger.warning("SDK camera not available, vision client skipped")
-            return False
-
+        """Check ZMQ availability."""
         # Check ZMQ
         try:
             import zmq  # noqa: F401
@@ -120,125 +90,60 @@ class VisionClientPlugin(Plugin):
 
         return True
 
-    def _init_shm(self, width: int, height: int, channels: int) -> None:
-        """Initialize or resize shared memory for frame publishing."""
-        needed = _SHM_HEADER_SIZE + (width * height * channels)
-        if self._shm_mmap is not None and self._shm_size >= needed:
-            return
-
-        self._cleanup_shm()
-
-        import mmap
-        import os
-
-        # Create or open the shm file
-        fd = os.open(self._shm_path, os.O_RDWR | os.O_CREAT, 0o666)
-        os.ftruncate(fd, needed)
-        mm = mmap.mmap(fd, needed)
-        os.close(fd)
-
-        self._shm_mmap = mm
-        self._shm_size = needed
-        logger.info(
-            f"SHM initialized: {self._shm_path} ({width}x{height}x{channels}, "
-            f"{needed / 1024:.0f} KB)"
-        )
-
-    def _write_frame(self, frame: np.ndarray) -> None:
-        """Write a BGR frame to shared memory with header."""
-        h, w, c = frame.shape
-        self._init_shm(w, h, c)
-
-        self._frame_id += 1
-        header = struct.pack(_SHM_HEADER_FMT, w, h, c, self._frame_id)
-
-        mm = self._shm_mmap
-        mm.seek(0)
-        mm.write(header)
-        mm.write(frame.tobytes())
-
-    def _cleanup_shm(self) -> None:
-        """Close shared memory mappings."""
-        if self._shm_mmap is not None:
-            try:
-                self._shm_mmap.close()
-            except Exception:
-                pass
-            self._shm_mmap = None
-            self._shm_size = 0
-
     async def start(self):
         import zmq
-        import zmq.asyncio
         import msgpack
 
-        ctx = zmq.asyncio.Context()
-        sub = ctx.socket(zmq.SUB)
-        sub.setsockopt(zmq.SUBSCRIBE, b"vision")
-        sub.setsockopt(zmq.CONFLATE, 1)  # only keep latest message
-        sub.connect(self._zmq_url)
+        self._running = True
+        logger.info(f"Vision client started (zmq={self._zmq_url})")
 
-        logger.info(
-            f"Vision client started (shm={self._shm_path}, zmq={self._zmq_url})"
+        result_task = asyncio.create_task(
+            asyncio.to_thread(self._result_loop_sync, zmq, msgpack)
         )
 
-        frame_task = asyncio.create_task(self._frame_loop())
-        result_task = asyncio.create_task(self._result_loop(sub, msgpack))
-
         try:
-            await asyncio.gather(frame_task, result_task)
+            await result_task
         finally:
-            frame_task.cancel()
             result_task.cancel()
-            sub.close()
-            ctx.term()
-            self._cleanup_shm()
             logger.info("Vision client stopped")
 
-    async def _frame_loop(self):
-        """Capture SDK frames and write to shared memory at ~25Hz."""
-        consecutive_errors = 0
+    def _result_loop_sync(self, zmq, msgpack):
+        """Receive inference results from vision-trt via ZMQ (sync, runs in thread)."""
+        ctx = zmq.Context()
+        sub = ctx.socket(zmq.SUB)
+        sub.setsockopt(zmq.SUBSCRIBE, b"vision")
+        # NOTE: CONFLATE=1 breaks multipart recv — use RCVHWM=1 instead
+        sub.setsockopt(zmq.RCVHWM, 1)
+        sub.setsockopt(zmq.RCVTIMEO, 500)
+        sub.connect(self._zmq_url)
+        logger.info(f"ZMQ subscriber connected to {self._zmq_url}")
+
+        try:
+            self._result_loop_inner(sub, zmq, msgpack)
+        except Exception:
+            logger.exception("ZMQ result loop crashed")
+        finally:
+            sub.close()
+            ctx.term()
+            logger.info("ZMQ subscriber closed")
+
+    def _result_loop_inner(self, sub, zmq, msgpack):
+        """Inner loop for ZMQ result processing."""
+        recv_count = 0
         while self._running:
             try:
-                frame = await asyncio.to_thread(self.app.reachy.media_manager.get_frame)
-            except Exception as e:
-                consecutive_errors += 1
-                if consecutive_errors <= 3 or consecutive_errors % 50 == 0:
-                    logger.warning(f"Frame capture error ({consecutive_errors}): {e}")
-                await asyncio.sleep(1.0 if consecutive_errors >= 50 else 0.04)
+                parts = sub.recv_multipart()
+                msg = msgpack.unpackb(parts[1], raw=False)
+            except zmq.Again:
                 continue
-
-            if frame is None:
-                await asyncio.sleep(0.04)
-                continue
-
-            consecutive_errors = 0
-
-            try:
-                await asyncio.to_thread(self._write_frame, frame)
-            except Exception as e:
-                logger.error(f"SHM write error: {e}")
-
-            await asyncio.sleep(0.04)  # ~25Hz
-
-    async def _result_loop(self, sub, msgpack):
-        """Receive inference results from vision-trt via ZMQ."""
-        import zmq
-
-        poller = zmq.asyncio.Poller()
-        poller.register(sub, zmq.POLLIN)
-
-        while self._running:
-            events = dict(await poller.poll(timeout=100))
-            if sub not in events:
-                continue
-
-            try:
-                topic, data = await sub.recv_multipart()
-                msg = msgpack.unpackb(data, raw=False)
             except Exception as e:
                 logger.debug(f"ZMQ recv error: {e}")
                 continue
+
+            recv_count += 1
+            if recv_count <= 3 or recv_count % 100 == 0:
+                faces_n = len(msg.get("faces", []))
+                logger.info(f"ZMQ recv #{recv_count}: {faces_n} faces")
 
             faces = msg.get("faces", [])
             now = time.monotonic()
