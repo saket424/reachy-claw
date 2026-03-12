@@ -38,3 +38,23 @@ class EventBus:
                     cb(data)
             except Exception as e:
                 logger.warning("EventBus callback error on %s: %s", event, e)
+
+    def emit_sync(self, event: str, data: Any = None) -> None:
+        """Thread-safe emit: schedule async callbacks on the running loop."""
+        for cb in self._subscribers.get(event, []):
+            try:
+                if inspect.iscoroutinefunction(cb):
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(cb(data))
+                    except RuntimeError:
+                        # Called from non-async thread — schedule on main loop
+                        try:
+                            loop = asyncio.get_event_loop()
+                            asyncio.run_coroutine_threadsafe(cb(data), loop)
+                        except Exception:
+                            pass
+                else:
+                    cb(data)
+            except Exception as e:
+                logger.warning("EventBus emit_sync error on %s: %s", event, e)

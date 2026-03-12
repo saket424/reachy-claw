@@ -25,6 +25,8 @@ class DashboardPlugin(Plugin):
         self._site = None
         self._runner = None
         self._ws_clients: set = set()
+        self._last_llm_emotion: str | None = None
+        self._capture_count: int = 0
 
     def setup(self) -> bool:
         try:
@@ -51,6 +53,9 @@ class DashboardPlugin(Plugin):
         await self._site.start()
         logger.info("Dashboard listening on http://0.0.0.0:%d", port)
 
+        # Set default volume on startup (prevent 0% after container restart)
+        await self._set_volume(80)
+
         # Subscribe to EventBus
         bus = self.app.events
         bus.subscribe("asr_partial", self._on_asr_partial)
@@ -60,6 +65,8 @@ class DashboardPlugin(Plugin):
         bus.subscribe("state_change", self._on_state_change)
         bus.subscribe("emotion", self._on_emotion)
         bus.subscribe("observation", self._on_observation)
+        bus.subscribe("vision_faces", self._on_vision_faces)
+        bus.subscribe("smile_capture", self._on_smile_capture)
 
         # State polling loop (5Hz)
         while self._running:
@@ -77,6 +84,8 @@ class DashboardPlugin(Plugin):
         bus.unsubscribe("state_change", self._on_state_change)
         bus.unsubscribe("emotion", self._on_emotion)
         bus.unsubscribe("observation", self._on_observation)
+        bus.unsubscribe("vision_faces", self._on_vision_faces)
+        bus.unsubscribe("smile_capture", self._on_smile_capture)
 
         # Close all WebSocket connections
         for ws in list(self._ws_clients):
@@ -162,6 +171,52 @@ class DashboardPlugin(Plugin):
                     )
 
             await self._broadcast({"type": "prompt_saved", "mode": mode})
+
+        elif msg_type == "clear_captures":
+            await self._clear_captures()
+
+        elif msg_type == "get_volume":
+            vol = await self._get_volume()
+            await self._broadcast({"type": "volume", "volume": vol})
+
+        elif msg_type == "set_volume":
+            vol = max(0, min(100, int(data.get("volume", 80))))
+            await self._set_volume(vol)
+            await self._broadcast({"type": "volume", "volume": vol})
+
+    async def _get_volume(self) -> int:
+        """Read current ALSA volume for Reachy Mini Audio (card 2)."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "amixer", "-c", "2", "get", "PCM",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await proc.communicate()
+            # Parse "Playback 48 [80%]" from output
+            import re
+            m = re.search(r"\[(\d+)%\]", stdout.decode())
+            return int(m.group(1)) if m else 80
+        except Exception:
+            return 80
+
+    async def _set_volume(self, percent: int) -> None:
+        """Set ALSA volume for Reachy Mini Audio (card 2)."""
+        try:
+            await asyncio.create_subprocess_exec(
+                "amixer", "-c", "2", "set", "PCM", f"{percent}%",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            # Also set PCM,1 (mono channel)
+            await asyncio.create_subprocess_exec(
+                "amixer", "-c", "2", "set", "PCM,1", f"{percent}%",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            logger.info("Volume set to %d%%", percent)
+        except Exception as e:
+            logger.warning("Failed to set volume: %s", e)
 
     async def _handle_stream_proxy(self, request):
         """Proxy MJPEG stream from vision-trt (same-origin for browser)."""
@@ -258,6 +313,7 @@ class DashboardPlugin(Plugin):
                 "confidence": round(target.confidence, 2),
             },
             "mode": self.app.config.conversation_mode,
+            "capture_count": self._capture_count,
         })
 
     # ── EventBus callbacks ────────────────────────────────────────────
@@ -287,7 +343,9 @@ class DashboardPlugin(Plugin):
             "type": "llm_end",
             "full_text": data.get("full_text", ""),
             "run_id": data.get("run_id", ""),
+            "emotion": self._last_llm_emotion,
         })
+        self._last_llm_emotion = None
 
     async def _on_state_change(self, data: dict) -> None:
         await self._broadcast({
@@ -296,9 +354,10 @@ class DashboardPlugin(Plugin):
         })
 
     async def _on_emotion(self, data: dict) -> None:
+        self._last_llm_emotion = data.get("emotion", "neutral")
         await self._broadcast({
             "type": "emotion",
-            "emotion": data.get("emotion", "neutral"),
+            "emotion": self._last_llm_emotion,
         })
 
     async def _on_observation(self, data: dict) -> None:
@@ -306,3 +365,31 @@ class DashboardPlugin(Plugin):
             "type": "observation",
             "text": data.get("text", ""),
         })
+
+    async def _on_vision_faces(self, data: dict) -> None:
+        await self._broadcast({
+            "type": "vision_faces",
+            "faces": data.get("faces", []),
+        })
+
+    async def _on_smile_capture(self, data: dict) -> None:
+        self._capture_count = data.get("count", self._capture_count + 1)
+        await self._broadcast({
+            "type": "smile_capture",
+            "count": self._capture_count,
+        })
+
+    async def _clear_captures(self) -> None:
+        """Call vision-trt API to clear captures, broadcast reset."""
+        vision_url = self.app.config.vision_service_url
+        host = vision_url.replace("tcp://", "").split(":")[0]
+        api_url = f"http://{host}:8630/api/captures"
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.delete(api_url) as resp:
+                    if resp.status == 200:
+                        self._capture_count = 0
+        except Exception as e:
+            logger.warning("Failed to clear captures: %s", e)
+        await self._broadcast({"type": "capture_reset", "count": 0})

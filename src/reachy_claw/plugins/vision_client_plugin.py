@@ -77,6 +77,7 @@ class VisionClientPlugin(Plugin):
         self._last_emotion_conf = 0.0
         self._last_emotion_time = 0.0
         self._emotion_sustain = cfg.vision_emotion_sustain
+        self._emotion_log_time = 0.0  # throttled debug logging
 
         # Identity (shared with app for conversation context)
         self.current_identity = None
@@ -102,6 +103,7 @@ class VisionClientPlugin(Plugin):
         import msgpack
 
         self._running = True
+        self._loop = asyncio.get_running_loop()
         logger.info(f"Vision client started (zmq={self._zmq_url})")
 
         result_task = asyncio.create_task(
@@ -160,6 +162,25 @@ class VisionClientPlugin(Plugin):
             if recv_count <= 3 or recv_count % 100 == 0:
                 faces_n = len(msg.get("faces", []))
                 logger.info(f"ZMQ recv #{recv_count}: {faces_n} faces")
+
+            # Emit vision_faces for dashboard (capped at 5)
+            faces_for_dash = [
+                {
+                    "bbox": f.get("bbox", []),
+                    "emotion": _EMOTION_REMAP.get(f.get("emotion", ""), "neutral"),
+                    "emotion_confidence": float(f.get("emotion_confidence", 0)),
+                    "identity": f.get("identity"),
+                }
+                for f in msg.get("faces", [])[:5]
+            ]
+            self._emit_threadsafe("vision_faces", {"faces": faces_for_dash})
+
+            # Check for smile capture event
+            capture = msg.get("capture")
+            if capture and capture.get("event"):
+                self._emit_threadsafe("smile_capture", {
+                    "count": capture.get("count", 0),
+                })
 
             faces = msg.get("faces", [])
             now = time.monotonic()
@@ -255,6 +276,20 @@ class VisionClientPlugin(Plugin):
             # Emotion mapping
             emotion = primary.get("emotion")
             emotion_conf = primary.get("emotion_confidence", 0.0)
+
+            # Throttled diagnostic log — every 3s show raw detection
+            if emotion and (now - self._emotion_log_time) >= 3.0:
+                mapped_name = _EMOTION_REMAP.get(emotion, "?")
+                below = emotion_conf < self._emotion_threshold
+                cd = (now - self._last_emotion_time) < self._emotion_cooldown
+                logger.info(
+                    f"Emotion raw: {emotion}→{mapped_name} "
+                    f"conf={emotion_conf:.2f} "
+                    f"{'BELOW_THRESH' if below else 'ok'} "
+                    f"{'COOLDOWN' if cd else 'ok'}"
+                )
+                self._emotion_log_time = now
+
             if (
                 emotion
                 and emotion_conf >= self._emotion_threshold
@@ -294,6 +329,21 @@ class VisionClientPlugin(Plugin):
                 self.current_identity = identity
                 if identity:
                     logger.info(f"Face identified: {identity}")
+
+    def _emit_threadsafe(self, event: str, data: dict) -> None:
+        """Emit EventBus event from a background thread."""
+        loop = getattr(self, "_loop", None)
+        if not loop:
+            return
+        for cb in self.app.events._subscribers.get(event, []):
+            try:
+                import inspect
+                if inspect.iscoroutinefunction(cb):
+                    asyncio.run_coroutine_threadsafe(cb(data), loop)
+                else:
+                    cb(data)
+            except Exception:
+                pass
 
     async def stop(self):
         self._running = False
