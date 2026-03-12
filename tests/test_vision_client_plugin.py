@@ -150,8 +150,8 @@ class TestConfigYamlMapping:
     def test_config_defaults(self):
         cfg = Config()
         assert cfg.vision_service_url == "tcp://127.0.0.1:8631"
-        assert cfg.vision_emotion_threshold == 0.6
-        assert cfg.vision_emotion_cooldown == 3.0
+        assert cfg.vision_emotion_threshold == 0.45
+        assert cfg.vision_emotion_cooldown == 2.0
         assert cfg.vision_identity_threshold == 0.4
 
 

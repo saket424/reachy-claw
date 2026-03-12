@@ -37,8 +37,8 @@ def test_load_config_reads_environment_overrides(monkeypatch):
 
 def test_config_has_motion_defaults():
     config = Config()
-    assert config.motion_emotion_intensity == 0.7
-    assert config.motion_head_tracking_smoothing == 0.3
+    assert config.motion_emotion_intensity == 1.0
+    assert config.motion_head_tracking_smoothing == 0.35
     assert config.motion_idle_animation_interval == 5.0
 
 
