@@ -118,6 +118,10 @@ class Config:
     vision_emotion_cooldown: float = 3.0
     vision_identity_threshold: float = 0.4
 
+    # Dashboard (exhibition UI)
+    dashboard_enabled: bool = False
+    dashboard_port: int = 8640
+
     # Plugin enable flags
     enable_face_tracker: bool = True  # auto-skips if deps missing
     enable_motion: bool = True
@@ -215,6 +219,8 @@ _YAML_FIELD_MAP: dict[tuple[str, str], str] = {
     ("vision", "emotion_threshold"): "vision_emotion_threshold",
     ("vision", "emotion_cooldown"): "vision_emotion_cooldown",
     ("vision", "identity_threshold"): "vision_identity_threshold",
+    ("dashboard", "enabled"): "dashboard_enabled",
+    ("dashboard", "port"): "dashboard_port",
     ("plugins", "face_tracker"): "enable_face_tracker",
     ("plugins", "motion"): "enable_motion",
 }
