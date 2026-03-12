@@ -145,7 +145,7 @@ class ConversationPlugin(Plugin):
 
                 if self._monologue_mode:
                     system_prompt = config.ollama_monologue_prompt or MONOLOGUE_SYSTEM_PROMPT
-                    skip_emotion = True
+                    skip_emotion = False
                 else:
                     system_prompt = config.ollama_system_prompt or DEFAULT_SYSTEM_PROMPT
                     skip_emotion = False
@@ -400,27 +400,27 @@ class ConversationPlugin(Plugin):
         """Build compact LLM input for monologue mode from speech + vision."""
         parts = []
         if transcript:
-            parts.append(f"[听到] {transcript}")
+            parts.append(f"[heard] {transcript}")
 
         vision = self.app.get_plugin("vision_client")
         if vision and getattr(vision, "_last_faces_summary", None):
             s = vision._last_faces_summary
             p = s[0]
-            name = p.get("identity") or "?"
+            name = p.get("identity") or "stranger"
             emo = p.get("emotion", "neutral")
-            parts.append(f"[人] {name} {emo}")
+            parts.append(f"[person] {name}, {emo}")
             if len(s) > 1:
-                parts.append(f"[+{len(s)-1}人]")
+                parts.append(f"[+{len(s)-1} others]")
         elif vision:
             emo = getattr(vision, "_last_emotion", None)
             if emo and emo != "neutral":
-                parts.append(f"[表情] {emo}")
+                parts.append(f"[expression] {emo}")
             identity = getattr(vision, "current_identity", None)
             if identity:
-                parts.append(f"[身份] {identity}")
+                parts.append(f"[identity] {identity}")
 
         if not parts:
-            parts.append("[安静观察中]")
+            parts.append("[quiet, observing]")
         return "\n".join(parts)
 
     def switch_mode(self, mode: str) -> None:
@@ -435,7 +435,7 @@ class ConversationPlugin(Plugin):
                 self._client._config.system_prompt = (
                     self.app.config.ollama_monologue_prompt or MONOLOGUE_SYSTEM_PROMPT
                 )
-                self._client._config.skip_emotion_extraction = True
+                self._client._config.skip_emotion_extraction = False
             else:
                 self._client._config.system_prompt = (
                     self.app.config.ollama_system_prompt or DEFAULT_SYSTEM_PROMPT
