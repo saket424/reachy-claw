@@ -14,14 +14,16 @@ class TestHeadTarget:
         t = HeadTarget()
         assert t.yaw == 0.0
         assert t.pitch == 0.0
+        assert t.roll == 0.0
         assert t.confidence == 0.0
         assert t.source == ""
         assert t.timestamp > 0
 
     def test_custom_values(self):
-        t = HeadTarget(yaw=15.0, pitch=-10.0, confidence=0.9, source="face")
+        t = HeadTarget(yaw=15.0, pitch=-10.0, roll=5.0, confidence=0.9, source="face")
         assert t.yaw == 15.0
         assert t.pitch == -10.0
+        assert t.roll == 5.0
         assert t.confidence == 0.9
         assert t.source == "face"
 
@@ -163,3 +165,22 @@ class TestHeadTargetBus:
         target = bus.get_fused_target()
         assert target.yaw == pytest.approx(15.0)
         assert target.confidence == 0.95
+
+    def test_roll_fused_from_face(self):
+        bus = HeadTargetBus()
+        bus.publish(
+            HeadTarget(yaw=10.0, pitch=-3.0, roll=7.5, confidence=0.9, source="face")
+        )
+        target = bus.get_fused_target()
+        assert target.source == "face"
+        assert target.roll == pytest.approx(7.5)
+
+    def test_roll_zero_for_doa_and_none(self):
+        bus = HeadTargetBus()
+        bus.publish(HeadTarget(yaw=20.0, confidence=0.8, source="doa"))
+        target = bus.get_fused_target()
+        assert target.roll == 0.0
+
+        bus2 = HeadTargetBus()
+        target2 = bus2.get_fused_target()
+        assert target2.roll == 0.0

@@ -107,6 +107,7 @@ class Config:
     vision_camera_index: int = 0
     vision_max_yaw: float = 25.0
     vision_max_pitch: float = 15.0
+    vision_max_roll: float = 15.0
     vision_smoothing_alpha: float = 0.3
     vision_deadzone: float = 0.02
     vision_face_lost_delay: float = 2.0
@@ -117,6 +118,11 @@ class Config:
     vision_emotion_threshold: float = 0.6
     vision_emotion_cooldown: float = 3.0
     vision_identity_threshold: float = 0.4
+
+    # Conversation mode
+    conversation_mode: str = "conversation"  # "conversation" | "monologue"
+    monologue_interval: float = 5.0  # seconds between auto-triggered monologues
+    monologue_volume: float = 0.3  # volume multiplier for monologue TTS
 
     # Dashboard (exhibition UI)
     dashboard_enabled: bool = False
@@ -211,6 +217,7 @@ _YAML_FIELD_MAP: dict[tuple[str, str], str] = {
     ("vision", "camera_index"): "vision_camera_index",
     ("vision", "max_yaw"): "vision_max_yaw",
     ("vision", "max_pitch"): "vision_max_pitch",
+    ("vision", "max_roll"): "vision_max_roll",
     ("vision", "smoothing_alpha"): "vision_smoothing_alpha",
     ("vision", "deadzone"): "vision_deadzone",
     ("vision", "face_lost_delay"): "vision_face_lost_delay",
@@ -219,6 +226,9 @@ _YAML_FIELD_MAP: dict[tuple[str, str], str] = {
     ("vision", "emotion_threshold"): "vision_emotion_threshold",
     ("vision", "emotion_cooldown"): "vision_emotion_cooldown",
     ("vision", "identity_threshold"): "vision_identity_threshold",
+    ("conversation", "mode"): "conversation_mode",
+    ("conversation", "monologue_interval"): "monologue_interval",
+    ("conversation", "monologue_volume"): "monologue_volume",
     ("dashboard", "enabled"): "dashboard_enabled",
     ("dashboard", "port"): "dashboard_port",
     ("plugins", "face_tracker"): "enable_face_tracker",

@@ -25,10 +25,12 @@ class MotionPlugin(Plugin):
         # Head tracking EMA state
         self._current_yaw = 0.0
         self._current_pitch = 0.0
+        self._current_roll = 0.0
         self._smoothing = app.config.motion_head_tracking_smoothing
         self._min_angle_change = 3.0  # degrees
         self._last_applied_yaw = 0.0
         self._last_applied_pitch = 0.0
+        self._last_applied_roll = 0.0
         self._neutral_decay = 0.05
 
         # Speech wobble offsets (roll, pitch, yaw) set by HeadWobbler
@@ -89,17 +91,21 @@ class MotionPlugin(Plugin):
             if target.source == "none":
                 self._current_yaw += self._neutral_decay * (0.0 - self._current_yaw)
                 self._current_pitch += self._neutral_decay * (0.0 - self._current_pitch)
+                self._current_roll += self._neutral_decay * (0.0 - self._current_roll)
             else:
                 self._current_yaw += self._smoothing * (target.yaw - self._current_yaw)
                 self._current_pitch += self._smoothing * (target.pitch - self._current_pitch)
+                self._current_roll += self._smoothing * (target.roll - self._current_roll)
 
             delta_yaw = abs(self._current_yaw - self._last_applied_yaw)
             delta_pitch = abs(self._current_pitch - self._last_applied_pitch)
+            delta_roll = abs(self._current_roll - self._last_applied_roll)
 
-            if delta_yaw >= self._min_angle_change or delta_pitch >= self._min_angle_change:
-                self._set_head_pose(self._current_yaw, self._current_pitch)
+            if delta_yaw >= self._min_angle_change or delta_pitch >= self._min_angle_change or delta_roll >= self._min_angle_change:
+                self._set_head_pose(self._current_yaw, self._current_pitch, self._current_roll)
                 self._last_applied_yaw = self._current_yaw
                 self._last_applied_pitch = self._current_pitch
+                self._last_applied_roll = self._current_roll
 
             await asyncio.sleep(poll_interval)
 
@@ -128,15 +134,15 @@ class MotionPlugin(Plugin):
         except Exception:
             pass
 
-    def _set_head_pose(self, yaw: float, pitch: float) -> None:
-        """Set head yaw and pitch for real-time tracking."""
+    def _set_head_pose(self, yaw: float, pitch: float, roll: float = 0.0) -> None:
+        """Set head yaw, pitch, and roll for real-time tracking."""
         reachy = self.app.reachy
         if not reachy:
             return
         try:
             from reachy_mini.utils import create_head_pose
 
-            pose = create_head_pose(yaw=yaw, pitch=pitch, degrees=True)
+            pose = create_head_pose(yaw=yaw, pitch=pitch, roll=roll, degrees=True)
             reachy.set_target_head_pose(pose)
         except Exception:
             pass

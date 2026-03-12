@@ -41,6 +41,7 @@ class DashboardPlugin(Plugin):
         app = web.Application()
         app.router.add_get("/", self._handle_index)
         app.router.add_get("/ws", self._handle_ws)
+        app.router.add_static("/static", STATIC_DIR, show_index=False)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -102,12 +103,29 @@ class DashboardPlugin(Plugin):
 
         try:
             async for msg in ws:
-                pass  # Client → server messages not used currently
+                if msg.type == 1:  # TEXT
+                    try:
+                        data = json.loads(msg.data)
+                        await self._handle_ws_message(data)
+                    except (json.JSONDecodeError, Exception) as e:
+                        logger.debug(f"WS message error: {e}")
         finally:
             self._ws_clients.discard(ws)
             logger.info("Dashboard WS client disconnected (%d remaining)", len(self._ws_clients))
 
         return ws
+
+    async def _handle_ws_message(self, data: dict) -> None:
+        """Handle client → server WS messages."""
+        msg_type = data.get("type")
+        if msg_type == "set_mode":
+            mode = data.get("mode", "conversation")
+            if mode not in ("conversation", "monologue"):
+                return
+            conv = self.app.get_plugin("conversation")
+            if conv and hasattr(conv, "switch_mode"):
+                conv.switch_mode(mode)
+            await self._broadcast({"type": "mode_changed", "mode": mode})
 
     # ── Broadcasting ──────────────────────────────────────────────────
 
@@ -166,7 +184,7 @@ class DashboardPlugin(Plugin):
             "head": {
                 "yaw": round(target.yaw, 1),
                 "pitch": round(target.pitch, 1),
-                "roll": 0.0,
+                "roll": round(target.roll, 1),
             },
             "antenna": antenna,
             "emotion": emotion,
@@ -176,6 +194,7 @@ class DashboardPlugin(Plugin):
                 "source": target.source,
                 "confidence": round(target.confidence, 2),
             },
+            "mode": self.app.config.conversation_mode,
         })
 
     # ── EventBus callbacks ────────────────────────────────────────────

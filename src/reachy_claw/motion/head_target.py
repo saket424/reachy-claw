@@ -18,6 +18,7 @@ class HeadTarget:
 
     yaw: float = 0.0  # degrees (positive = left)
     pitch: float = 0.0  # degrees (positive = up)
+    roll: float = 0.0  # degrees (positive = tilt right)
     confidence: float = 0.0  # 0 = no data, 1 = high confidence
     source: str = ""  # "face", "doa", "none"
     timestamp: float = field(default_factory=time.monotonic)
@@ -63,6 +64,7 @@ class HeadTargetBus:
                 return HeadTarget(
                     yaw=self._face_target.yaw,
                     pitch=self._face_target.pitch,
+                    roll=self._face_target.roll,
                     confidence=self._face_target.confidence,
                     source="face",
                     timestamp=self._face_target.timestamp,

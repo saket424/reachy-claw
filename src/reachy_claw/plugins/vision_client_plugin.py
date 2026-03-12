@@ -59,6 +59,7 @@ class VisionClientPlugin(Plugin):
         self._zmq_url = cfg.vision_service_url
         self._max_yaw = cfg.vision_max_yaw
         self._max_pitch = cfg.vision_max_pitch
+        self._max_roll = cfg.vision_max_roll
         self._smoothing_alpha = cfg.vision_smoothing_alpha
         self._deadzone = cfg.vision_deadzone
         self._face_lost_delay = cfg.vision_face_lost_delay
@@ -74,6 +75,7 @@ class VisionClientPlugin(Plugin):
         # Smoothing state (same as FaceTrackerPlugin)
         self._smooth_x = 0.0
         self._smooth_y = 0.0
+        self._smooth_roll = 0.0
         self._last_face_time = 0.0
         self._face_lost_published = False
 
@@ -83,6 +85,10 @@ class VisionClientPlugin(Plugin):
 
         # Identity (shared with app for conversation context)
         self.current_identity = None
+
+        # Multi-face state (for monologue mode)
+        self._last_face_count: int = 0
+        self._last_faces_summary: list[dict] = []
 
     def setup(self) -> bool:
         """Check SDK camera and ZMQ availability."""
@@ -194,7 +200,7 @@ class VisionClientPlugin(Plugin):
         consecutive_errors = 0
         while self._running:
             try:
-                frame = await asyncio.to_thread(self.app.reachy.media.get_frame)
+                frame = await asyncio.to_thread(self.app.reachy.media_manager.get_frame)
             except Exception as e:
                 consecutive_errors += 1
                 if consecutive_errors <= 3 or consecutive_errors % 50 == 0:
@@ -238,6 +244,8 @@ class VisionClientPlugin(Plugin):
             now = time.monotonic()
 
             if not faces:
+                self._last_face_count = 0
+                self._last_faces_summary = []
                 if (now - self._last_face_time) > self._face_lost_delay:
                     if not self._face_lost_published:
                         self.app.head_targets.publish(
@@ -249,6 +257,24 @@ class VisionClientPlugin(Plugin):
                         self._face_lost_published = True
                         self.current_identity = None
                 continue
+
+            # Update multi-face summary (sorted by bbox area descending)
+            self._last_face_count = len(faces)
+            sorted_faces = sorted(
+                faces,
+                key=lambda f: (
+                    (f["bbox"][2] - f["bbox"][0]) * (f["bbox"][3] - f["bbox"][1])
+                    if "bbox" in f else 0
+                ),
+                reverse=True,
+            )
+            self._last_faces_summary = [
+                {
+                    "identity": f.get("identity"),
+                    "emotion": _EMOTION_REMAP.get(f.get("emotion", ""), "neutral"),
+                }
+                for f in sorted_faces
+            ]
 
             # Select primary face (largest bbox area)
             primary = max(
@@ -277,9 +303,21 @@ class VisionClientPlugin(Plugin):
                 yaw = -self._smooth_x * self._max_yaw
                 pitch = -self._smooth_y * self._max_pitch
 
+                # Roll estimation from eye landmarks (points 0=left_eye, 1=right_eye)
+                roll = 0.0
+                landmarks = primary.get("landmarks")
+                if landmarks and len(landmarks) >= 2:
+                    left_eye, right_eye = landmarks[0], landmarks[1]
+                    eye_dx = right_eye[0] - left_eye[0]
+                    eye_dy = right_eye[1] - left_eye[1]
+                    raw_roll = float(np.degrees(np.arctan2(eye_dy, eye_dx)))
+                    # EMA smoothing
+                    self._smooth_roll += self._smoothing_alpha * (raw_roll - self._smooth_roll)
+                    roll = float(np.clip(self._smooth_roll, -self._max_roll, self._max_roll))
+
                 self.app.head_targets.publish(
                     HeadTarget(
-                        yaw=yaw, pitch=pitch, confidence=0.9,
+                        yaw=yaw, pitch=pitch, roll=roll, confidence=0.9,
                         source="face", timestamp=now,
                     )
                 )
