@@ -40,42 +40,52 @@ class SmileCaptureTracker:
         os.makedirs(self._dir, exist_ok=True)
         self._conf_threshold = confidence_threshold
         self._dist_threshold = distance_threshold
+        self._embeddings_path = os.path.join(self._dir, "embeddings.json")
         # Store all captured person embeddings — each person captured only once
-        self._captured_embeddings: list[list[float]] = []
+        self._captured_embeddings: list[list[float]] = self._load_embeddings()
         # Count existing files for persistence across restarts
         self.count = len([f for f in os.listdir(self._dir) if f.endswith(".jpg")])
         if self.count:
-            logger.info(f"SmileCaptureTracker: found {self.count} existing captures")
+            logger.info(f"SmileCaptureTracker: found {self.count} existing captures, "
+                        f"{len(self._captured_embeddings)} dedup embeddings")
 
-    def check_and_capture(self, results, frame: np.ndarray) -> dict | None:
-        """Check for smile capture trigger. Returns capture info or None."""
-        if not results:
-            return None
+    def _load_embeddings(self) -> list[list[float]]:
+        """Load persisted dedup embeddings from disk."""
+        if not os.path.exists(self._embeddings_path):
+            return []
+        try:
+            with open(self._embeddings_path, "r") as f:
+                data = json.load(f)
+            logger.info(f"Loaded {len(data)} persisted dedup embeddings")
+            return data
+        except Exception as e:
+            logger.warning(f"Failed to load embeddings: {e}")
+            return []
 
-        # Find largest face
-        primary = max(
-            results,
-            key=lambda r: (r.bbox[2] - r.bbox[0]) * (r.bbox[3] - r.bbox[1]),
-        )
+    def _save_embeddings(self) -> None:
+        """Persist dedup embeddings to disk."""
+        try:
+            with open(self._embeddings_path, "w") as f:
+                json.dump(self._captured_embeddings, f)
+        except Exception as e:
+            logger.warning(f"Failed to save embeddings: {e}")
 
-        # Check happiness with sufficient confidence
-        if primary.emotion != "Happiness" or (primary.emotion_confidence or 0) < self._conf_threshold:
-            return None
+    def _is_duplicate(self, embedding: list[float]) -> bool:
+        """Check if this face embedding matches any previously captured person."""
+        emb = np.array(embedding, dtype=np.float32)
+        for cap_emb in self._captured_embeddings:
+            dist = float(np.linalg.norm(emb - np.array(cap_emb, dtype=np.float32)))
+            if dist < self._dist_threshold:
+                return True
+        return False
 
-        # Per-person dedup: same person is only captured once (no time limit)
-        if primary.embedding:
-            emb = np.array(primary.embedding, dtype=np.float32)
-            for cap_emb in self._captured_embeddings:
-                dist = float(np.linalg.norm(emb - np.array(cap_emb, dtype=np.float32)))
-                if dist < self._dist_threshold:
-                    return None  # Already captured this person
-
-        # Save face crop
+    def _crop_and_save(self, face, frame: np.ndarray) -> str | None:
+        """Crop face from frame with padding and save as JPEG. Returns filename or None."""
         h, w = frame.shape[:2]
-        x1 = max(0, int(primary.bbox[0] * w))
-        y1 = max(0, int(primary.bbox[1] * h))
-        x2 = min(w, int(primary.bbox[2] * w))
-        y2 = min(h, int(primary.bbox[3] * h))
+        x1 = max(0, int(face.bbox[0] * w))
+        y1 = max(0, int(face.bbox[1] * h))
+        x2 = min(w, int(face.bbox[2] * w))
+        y2 = min(h, int(face.bbox[3] * h))
 
         # Add padding (20%)
         pad_w = int((x2 - x1) * 0.2)
@@ -93,13 +103,40 @@ class SmileCaptureTracker:
         fname = f"smile_{int(time.time())}_{self.count:04d}.jpg"
         fpath = os.path.join(self._dir, fname)
         cv2.imwrite(fpath, crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        return fname
 
-        # Record this person's embedding permanently
-        if primary.embedding:
-            self._captured_embeddings.append(primary.embedding)
+    def check_and_capture(self, results, frame: np.ndarray) -> dict | None:
+        """Check all faces for smile capture trigger. Returns capture info or None."""
+        if not results:
+            return None
 
-        logger.info(f"Smile captured: {fname} (total: {self.count})")
-        return {"count": self.count, "event": True, "file": fname}
+        captures = []
+        for face in results:
+            # Check happiness with sufficient confidence
+            if face.emotion != "Happiness" or (face.emotion_confidence or 0) < self._conf_threshold:
+                continue
+
+            # Per-person dedup: same person is only captured once
+            if face.embedding and self._is_duplicate(face.embedding):
+                continue
+
+            fname = self._crop_and_save(face, frame)
+            if not fname:
+                continue
+
+            # Record this person's embedding permanently
+            if face.embedding:
+                self._captured_embeddings.append(face.embedding)
+
+            logger.info(f"Smile captured: {fname} (total: {self.count})")
+            captures.append(fname)
+
+        if not captures:
+            return None
+
+        # Batch-persist after all captures in this frame
+        self._save_embeddings()
+        return {"count": self.count, "event": True, "file": captures[-1], "new_captures": len(captures)}
 
     def clear(self) -> int:
         """Delete all captures and reset count. Returns deleted count."""
@@ -113,6 +150,7 @@ class SmileCaptureTracker:
                     pass
         self.count = 0
         self._captured_embeddings.clear()
+        self._save_embeddings()
         logger.info(f"Cleared {deleted} captures")
         return deleted
 
