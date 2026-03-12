@@ -108,24 +108,33 @@ class VisionClientPlugin(Plugin):
             logger.info("Vision client stopped")
 
     def _result_loop_sync(self, zmq, msgpack):
-        """Receive inference results from vision-trt via ZMQ (sync, runs in thread)."""
-        ctx = zmq.Context()
-        sub = ctx.socket(zmq.SUB)
-        sub.setsockopt(zmq.SUBSCRIBE, b"vision")
-        # NOTE: CONFLATE=1 breaks multipart recv — use RCVHWM=1 instead
-        sub.setsockopt(zmq.RCVHWM, 1)
-        sub.setsockopt(zmq.RCVTIMEO, 500)
-        sub.connect(self._zmq_url)
-        logger.info(f"ZMQ subscriber connected to {self._zmq_url}")
+        """Receive inference results from vision-trt via ZMQ (sync, runs in thread).
 
-        try:
-            self._result_loop_inner(sub, zmq, msgpack)
-        except Exception:
-            logger.exception("ZMQ result loop crashed")
-        finally:
-            sub.close()
-            ctx.term()
-            logger.info("ZMQ subscriber closed")
+        Auto-reconnects on crash with exponential backoff.
+        """
+        while self._running:
+            ctx = zmq.Context()
+            sub = ctx.socket(zmq.SUB)
+            sub.setsockopt(zmq.SUBSCRIBE, b"vision")
+            # NOTE: CONFLATE=1 breaks multipart recv — use RCVHWM=1 instead
+            sub.setsockopt(zmq.RCVHWM, 1)
+            sub.setsockopt(zmq.RCVTIMEO, 500)
+            sub.connect(self._zmq_url)
+            logger.info(f"ZMQ subscriber connected to {self._zmq_url}")
+
+            try:
+                self._result_loop_inner(sub, zmq, msgpack)
+            except Exception:
+                logger.exception("ZMQ result loop crashed, reconnecting in 2s")
+            finally:
+                sub.close()
+                ctx.term()
+
+            if self._running:
+                import time
+                time.sleep(2)
+
+        logger.info("ZMQ subscriber closed")
 
     def _result_loop_inner(self, sub, zmq, msgpack):
         """Inner loop for ZMQ result processing."""
@@ -205,7 +214,9 @@ class VisionClientPlugin(Plugin):
                     self._smooth_x += self._smoothing_alpha * (face_x - self._smooth_x)
                     self._smooth_y += self._smoothing_alpha * (face_y - self._smooth_y)
 
-                yaw = -self._smooth_x * self._max_yaw
+                # Body rotation: face_x → body base Z-axis tracking
+                body_yaw = -self._smooth_x * self._max_yaw
+                # Head mirroring: face_y → pitch
                 pitch = -self._smooth_y * self._max_pitch
 
                 # Roll estimation from eye landmarks (points 0=left_eye, 1=right_eye)
@@ -222,7 +233,8 @@ class VisionClientPlugin(Plugin):
 
                 self.app.head_targets.publish(
                     HeadTarget(
-                        yaw=yaw, pitch=pitch, roll=roll, confidence=0.9,
+                        yaw=0.0, pitch=pitch, roll=roll,
+                        body_yaw=body_yaw, confidence=0.9,
                         source="face", timestamp=now,
                     )
                 )

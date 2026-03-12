@@ -380,6 +380,7 @@ class ReachyClawApp:
 
                 self.reachy.goto_target(
                     head=create_head_pose(roll=0, pitch=0, yaw=0, degrees=True),
+                    body_yaw=0.0,
                     duration=0.5,
                 )
                 self.reachy.set_target_antenna_joint_positions([0.0, 0.0])

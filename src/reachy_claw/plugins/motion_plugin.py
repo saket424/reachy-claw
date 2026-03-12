@@ -2,10 +2,16 @@
 
 Consumes the HeadTargetBus for fused head tracking (face + DOA),
 processes the emotion queue, and plays idle animations.
+
+Motion separation:
+  - Body rotation (base Z-axis): tracks person's horizontal position
+  - Head (Stewart platform): mirrors person's head pose (pitch/roll)
+  - Antennas: emotion-driven expressions
 """
 
 import asyncio
 import logging
+import math
 import time
 
 import numpy as np
@@ -22,7 +28,7 @@ class MotionPlugin(Plugin):
 
     def __init__(self, app):
         super().__init__(app)
-        # Head tracking EMA state
+        # Head tracking EMA state (Stewart platform — pitch/roll mirroring)
         self._current_yaw = 0.0
         self._current_pitch = 0.0
         self._current_roll = 0.0
@@ -32,6 +38,10 @@ class MotionPlugin(Plugin):
         self._last_applied_pitch = 0.0
         self._last_applied_roll = 0.0
         self._neutral_decay = 0.05
+
+        # Body rotation EMA state (base Z-axis — horizontal tracking)
+        self._current_body_yaw = 0.0
+        self._last_applied_body_yaw = 0.0
 
         # Speech wobble offsets (roll, pitch, yaw) set by HeadWobbler
         self._speech_roll = 0.0
@@ -75,7 +85,7 @@ class MotionPlugin(Plugin):
         logger.info("Motion loop stopped")
 
     async def _head_tracking_loop(self):
-        """Consume fused head targets and drive the robot head."""
+        """Consume fused head targets and drive body rotation + head pose."""
         logger.info("Head tracking fusion loop started")
         poll_interval = self.app.config.motion_head_tracking_poll_interval
 
@@ -89,14 +99,20 @@ class MotionPlugin(Plugin):
             target = self.app.head_targets.get_fused_target()
 
             if target.source == "none":
+                # Decay all axes to neutral
                 self._current_yaw += self._neutral_decay * (0.0 - self._current_yaw)
                 self._current_pitch += self._neutral_decay * (0.0 - self._current_pitch)
                 self._current_roll += self._neutral_decay * (0.0 - self._current_roll)
+                self._current_body_yaw += self._neutral_decay * (0.0 - self._current_body_yaw)
             else:
+                # Head (Stewart platform): pitch + roll mirroring
                 self._current_yaw += self._smoothing * (target.yaw - self._current_yaw)
                 self._current_pitch += self._smoothing * (target.pitch - self._current_pitch)
                 self._current_roll += self._smoothing * (target.roll - self._current_roll)
+                # Body rotation: horizontal person tracking
+                self._current_body_yaw += self._smoothing * (target.body_yaw - self._current_body_yaw)
 
+            # Update head pose if changed enough
             delta_yaw = abs(self._current_yaw - self._last_applied_yaw)
             delta_pitch = abs(self._current_pitch - self._last_applied_pitch)
             delta_roll = abs(self._current_roll - self._last_applied_roll)
@@ -106,6 +122,12 @@ class MotionPlugin(Plugin):
                 self._last_applied_yaw = self._current_yaw
                 self._last_applied_pitch = self._current_pitch
                 self._last_applied_roll = self._current_roll
+
+            # Update body rotation if changed enough
+            delta_body = abs(self._current_body_yaw - self._last_applied_body_yaw)
+            if delta_body >= self._min_angle_change:
+                self._set_body_yaw(self._current_body_yaw)
+                self._last_applied_body_yaw = self._current_body_yaw
 
             await asyncio.sleep(poll_interval)
 
@@ -135,7 +157,7 @@ class MotionPlugin(Plugin):
             pass
 
     def _set_head_pose(self, yaw: float, pitch: float, roll: float = 0.0) -> None:
-        """Set head yaw, pitch, and roll for real-time tracking."""
+        """Set head yaw, pitch, and roll on the Stewart platform."""
         reachy = self.app.reachy
         if not reachy:
             return
@@ -144,6 +166,16 @@ class MotionPlugin(Plugin):
 
             pose = create_head_pose(yaw=yaw, pitch=pitch, roll=roll, degrees=True)
             reachy.set_target_head_pose(pose)
+        except Exception:
+            pass
+
+    def _set_body_yaw(self, yaw_degrees: float) -> None:
+        """Set body base rotation (Z-axis) for horizontal person tracking."""
+        reachy = self.app.reachy
+        if not reachy:
+            return
+        try:
+            reachy.set_target_body_yaw(math.radians(yaw_degrees))
         except Exception:
             pass
 

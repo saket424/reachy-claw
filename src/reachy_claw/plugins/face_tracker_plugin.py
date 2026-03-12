@@ -28,6 +28,7 @@ class FaceTrackerPlugin(Plugin):
         self._camera_index = cfg.vision_camera_index
         self._max_yaw = cfg.vision_max_yaw
         self._max_pitch = cfg.vision_max_pitch
+        self._max_roll = cfg.vision_max_roll
         self._smoothing_alpha = cfg.vision_smoothing_alpha
         self._deadzone = cfg.vision_deadzone
         self._face_lost_delay = cfg.vision_face_lost_delay
@@ -40,6 +41,7 @@ class FaceTrackerPlugin(Plugin):
         # Smoothing state
         self._smooth_x = 0.0
         self._smooth_y = 0.0
+        self._smooth_roll = 0.0
         self._last_face_time = 0.0
 
     def _has_sdk_camera(self) -> bool:
@@ -230,14 +232,27 @@ class FaceTrackerPlugin(Plugin):
                             face_y - self._smooth_y
                         )
 
-                    # Negative x = face is left = robot turns left (positive yaw)
-                    yaw = -self._smooth_x * self._max_yaw
+                    # Roll from eye landmarks (degrees)
+                    roll = 0.0
+                    if _roll is not None:
+                        import math
+                        raw_roll = math.degrees(float(_roll))
+                        self._smooth_roll += self._smoothing_alpha * (
+                            raw_roll - self._smooth_roll
+                        )
+                        roll = max(-self._max_roll, min(self._max_roll, self._smooth_roll))
+
+                    # Body rotation: face_x → body base Z-axis tracking
+                    body_yaw = -self._smooth_x * self._max_yaw
+                    # Head mirroring: face_y → pitch, eye roll → roll
                     pitch = -self._smooth_y * self._max_pitch
 
                     self.app.head_targets.publish(
                         HeadTarget(
-                            yaw=yaw,
+                            yaw=0.0,
                             pitch=pitch,
+                            roll=roll,
+                            body_yaw=body_yaw,
                             confidence=0.9,
                             source="face",
                             timestamp=now,

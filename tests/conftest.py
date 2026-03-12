@@ -18,6 +18,7 @@ def _make_mock_reachy():
     # Head & antenna
     reachy.goto_target = MagicMock()
     reachy.set_target_head_pose = MagicMock()
+    reachy.set_target_body_yaw = MagicMock()
     reachy.set_target_antenna_joint_positions = MagicMock()
     reachy.set_target = MagicMock()
     reachy.wake_up = MagicMock()
