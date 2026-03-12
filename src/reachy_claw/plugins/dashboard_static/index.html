@@ -1,53 +1,81 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>EMOTION MIRROR</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=8">
 </head>
 <body>
 
-<div class="hud">
-    <img id="video-stream" alt="">
-    <canvas id="overlay-canvas"></canvas>
+<div class="dashboard">
+    <!-- 3-column grid -->
+    <div class="grid-container">
+        <!-- LEFT: What I See + What I Hear + ASR -->
+        <div class="col-left">
+            <div class="section-header"><span class="header-emoji">&#x1F440;</span> What I see</div>
+            <div class="video-container">
+                <img id="video-stream" alt="">
+                <canvas id="overlay-canvas"></canvas>
+                <div class="no-video" id="no-video">
+                    <div class="nv-icon">&#x1f4f7;</div>
+                    <div>Connecting to vision...</div>
+                </div>
+            </div>
 
-    <div class="status-bar">
-        <span class="status-title">EMOTION MIRROR</span>
-        <div class="status-dots">
-            <div class="badge"><span class="dot" id="dot-jetson"></span>Jetson</div>
-            <div class="badge"><span class="dot" id="dot-robot"></span>Robot</div>
-            <div class="badge"><span class="dot" id="dot-vision"></span>Vision</div>
-            <div class="badge"><span class="dot live" id="dot-live"></span>LIVE</div>
+            <div class="hear-row">
+                <span class="header-emoji">&#x1F442;</span>
+                <span class="hear-label">What I hear</span>
+                <img src="/static/waveform.svg" class="waveform-img" id="waveform-img" alt="waveform">
+            </div>
+            <div class="asr-bubble" id="asr-bubble">
+                <span class="asr-text" id="asr-text">Listening...</span>
+            </div>
         </div>
-        <div class="status-state">
-            <span class="state-indicator" id="robot-state" data-state="idle">idle</span>
+
+        <!-- CENTER: Face crop + Emotion + Capture counter -->
+        <div class="col-center">
+            <div class="face-viewport">
+                <canvas id="face-crop-canvas" width="320" height="400"></canvas>
+                <div class="bracket tl"></div>
+                <div class="bracket tr"></div>
+                <div class="bracket bl"></div>
+                <div class="bracket br"></div>
+            </div>
+            <div class="emotion-pill" id="emotion-pill">Neutral</div>
+            <div class="emotion-label" id="emotion-label">Waiting for face...</div>
+            <div class="capture-counter" id="capture-counter">
+                <span class="heart-icon">&#x2764;&#xFE0F;</span>
+                <span class="capture-count" id="capture-count">0</span>
+            </div>
+            <div class="capture-float-area" id="capture-float-area"></div>
         </div>
-    </div>
 
-    <button class="settings-btn" id="settings-open">
-        <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/></svg>
-    </button>
-
-    <div class="monologue-area">
-        <div class="observation-line" id="observation-text" style="display:none"></div>
-        <div class="monologue-bubble" id="monologue-bubble">
-            <div class="monologue-text" id="monologue-text">...</div>
+        <!-- RIGHT: Reachy's Mind -->
+        <div class="col-right">
+            <div class="section-header mind-header">
+                <img src="/static/brain-bulb.svg" class="mind-logo" alt="logo">
+                <div class="mind-title">
+                    <span>Reachy's</span>
+                    <span>Mind</span>
+                </div>
+            </div>
+            <div class="thought-list" id="thought-list"></div>
         </div>
-        <img class="monologue-avatar" src="/static/reachy-avatar.png" alt="Reachy">
-    </div>
-
-    <div class="asr-bar">
-        <svg class="asr-mic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
-        <span class="asr-label">ASR</span>
-        <span class="asr-text" id="asr-text"><i>&#20542;&#21548;&#20013;...</i></span>
     </div>
 </div>
 
-<div class="no-video" id="no-video">
-    <div class="icon">&#x1f4f7;</div>
-    <div>Connecting to vision service...</div>
-</div>
+<!-- Hidden: status dots for JS to update -->
+<span id="dot-jetson" class="dot-hidden"></span>
+<span id="dot-robot" class="dot-hidden"></span>
+<span id="dot-vision" class="dot-hidden"></span>
+<span id="dot-live" class="dot-hidden"></span>
+<span id="robot-state" class="dot-hidden" data-state="idle"></span>
+
+<!-- Settings button (floating) -->
+<button class="settings-btn" id="settings-open">
+    <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/></svg>
+</button>
 
 <!-- Settings Overlay -->
 <div class="settings-overlay" id="settings-overlay">
@@ -62,7 +90,6 @@
             <button class="settings-tab" data-tab="prompt">Prompt</button>
         </div>
         <div class="settings-content">
-            <!-- Tab: Mode -->
             <div class="tab-pane active" id="tab-mode">
                 <div class="mode-group">
                     <label class="mode-option selected" data-mode="conversation">
@@ -78,22 +105,28 @@
                         <div class="mode-radio"></div>
                         <div class="mode-info">
                             <h3>Monologue</h3>
-                            <p>Inner monologue mode. Robot observes and narrates thoughts. Expressions mirror detected user emotions via vision.</p>
+                            <p>Inner monologue mode. Robot observes and narrates thoughts.</p>
                         </div>
                     </label>
                 </div>
                 <div class="mode-status" id="mode-status">Current: conversation</div>
+                <div class="volume-section">
+                    <h3>Volume</h3>
+                    <div class="volume-row">
+                        <button class="volume-mute-btn" id="volume-mute" title="Mute">
+                            <svg viewBox="0 0 24 24" fill="currentColor" id="volume-icon-on"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+                            <svg viewBox="0 0 24 24" fill="currentColor" id="volume-icon-off" style="display:none"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>
+                        </button>
+                        <input type="range" class="volume-slider" id="volume-slider" min="0" max="100" value="80">
+                        <span class="volume-value" id="volume-value">80%</span>
+                    </div>
+                </div>
             </div>
-
-            <!-- Tab: Face Management -->
             <div class="tab-pane" id="tab-faces">
                 <div class="face-section">
                     <h3>Registered Faces</h3>
-                    <div class="face-list" id="face-list">
-                        <div class="face-empty">Loading...</div>
-                    </div>
+                    <div class="face-list" id="face-list"><div class="face-empty">Loading...</div></div>
                 </div>
-
                 <div class="face-section">
                     <h3>Live Camera Enroll</h3>
                     <div class="enroll-row">
@@ -101,7 +134,6 @@
                         <button class="enroll-btn" id="enroll-live-btn">Enroll</button>
                     </div>
                 </div>
-
                 <div class="face-section">
                     <h3>Upload Image</h3>
                     <div class="enroll-row">
@@ -115,7 +147,6 @@
                     <div class="upload-preview" id="upload-preview"></div>
                     <button class="enroll-btn" id="upload-btn" disabled>Upload &amp; Enroll</button>
                 </div>
-
                 <div class="face-section">
                     <h3>Backup</h3>
                     <div class="export-import-row">
@@ -125,8 +156,6 @@
                     </div>
                 </div>
             </div>
-
-            <!-- Tab: Prompt -->
             <div class="tab-pane" id="tab-prompt">
                 <div class="face-section">
                     <h3>Conversation Prompt</h3>

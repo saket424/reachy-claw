@@ -1,4 +1,4 @@
-// ── Emotion Mirror Dashboard — Fullscreen HUD ──────────────────────
+// ── Emotion Mirror Dashboard — 3-Column Layout ─────────────────────
 
 // ── Config ──────────────────────────────────────────────────────────
 const VISION_HOST = location.hostname + ':8630';
@@ -15,17 +15,30 @@ const EMOTION_COLORS = {
     Contempt: '#a0a0c0', Disgust: '#8b5e3c',
 };
 
+const EMOTION_EMOJI = {
+    happy: '\u{1F60A}', sad: '\u{1F622}', thinking: '\u{1F914}',
+    surprised: '\u{1F631}', curious: '\u{1F9D0}', excited: '\u{1F929}',
+    neutral: '\u{1F610}', confused: '\u{1F615}', angry: '\u{1F620}',
+    laugh: '\u{1F602}', fear: '\u{1F628}', listening: '\u{1F3A7}',
+};
+
 // ── State ───────────────────────────────────────────────────────────
 let visionWs = null;
 let dashboardWs = null;
-let latestFaces = null;
+let latestFaces = null;      // from vision WS
+let latestVisionFaces = [];  // from dashboard WS (vision_faces event)
 let currentLlmText = '';
-let lastLlmText = '';
 let currentRunId = null;
 let isStreaming = false;
 let currentMode = 'conversation';
 let uploadFiles = [];
 let asrIdleTimer = null;
+let captureCount = 0;
+let asrActive = false;
+let asrActiveTimer = null;
+
+// Thought bubble history (max 3)
+const MAX_THOUGHTS = 3;
 
 // ── DOM refs ────────────────────────────────────────────────────────
 const videoEl = document.getElementById('video-stream');
@@ -33,8 +46,12 @@ const canvasEl = document.getElementById('overlay-canvas');
 const ctx = canvasEl.getContext('2d');
 const noVideoEl = document.getElementById('no-video');
 const asrTextEl = document.getElementById('asr-text');
-const monologueTextEl = document.getElementById('monologue-text');
-const monologueBubble = document.getElementById('monologue-bubble');
+const faceCropCanvas = document.getElementById('face-crop-canvas');
+const faceCropCtx = faceCropCanvas.getContext('2d');
+const emotionPill = document.getElementById('emotion-pill');
+const emotionLabel = document.getElementById('emotion-label');
+const captureCountEl = document.getElementById('capture-count');
+const thoughtList = document.getElementById('thought-list');
 
 // ── Toast ───────────────────────────────────────────────────────────
 function showToast(msg, isError = false) {
@@ -44,7 +61,25 @@ function showToast(msg, isError = false) {
     setTimeout(() => { el.className = 'toast'; }, 2500);
 }
 
-// ── Vision WebSocket (face detection) ───────────────────────────────
+// ── Waveform bars init ──────────────────────────────────────────────
+const waveformImg = document.getElementById('waveform-img');
+
+function animateWaveform(active) {
+    if (waveformImg) {
+        if (active) {
+            waveformImg.style.opacity = '1';
+            waveformImg.style.filter = 'drop-shadow(0 0 8px rgba(163, 230, 53, 0.6))';
+        } else {
+            waveformImg.style.opacity = '0.4';
+            waveformImg.style.filter = 'drop-shadow(0 0 2px rgba(163, 230, 53, 0.2))';
+        }
+    }
+}
+
+// Run waveform animation loop (now just purely state based from ASR)
+setInterval(() => animateWaveform(asrActive), 200);
+
+// ── Vision WebSocket (face detection data) ──────────────────────────
 let visionRetry = 1000;
 
 function connectVision() {
@@ -61,6 +96,7 @@ function connectVision() {
         try {
             const data = JSON.parse(e.data);
             latestFaces = data.faces || [];
+            updateEmotionDisplay();
         } catch(err) {
             console.error('Vision WS parse error:', err);
         }
@@ -111,17 +147,19 @@ function handleDashboardMsg(msg) {
         case 'asr_partial':
             asrTextEl.innerHTML = msg.text;
             asrTextEl.className = 'asr-text partial';
+            triggerAsrActive();
             resetAsrIdleTimer();
             break;
 
         case 'asr_final':
             asrTextEl.innerHTML = msg.text;
             asrTextEl.className = 'asr-text';
+            triggerAsrActive();
             resetAsrIdleTimer();
             break;
 
         case 'observation':
-            updateObservation(msg.text);
+            // Observation context in monologue mode (vision description)
             break;
 
         case 'llm_delta':
@@ -129,18 +167,18 @@ function handleDashboardMsg(msg) {
                 currentRunId = msg.run_id;
                 currentLlmText = '';
                 isStreaming = true;
+                addStreamingCard();
             }
             currentLlmText += msg.text;
-            updateMonologue();
+            updateStreamingCard();
             break;
 
         case 'llm_end':
             if (msg.run_id === currentRunId) {
                 currentLlmText = msg.full_text;
-                lastLlmText = currentLlmText;
                 isStreaming = false;
                 currentRunId = null;
-                updateMonologue();
+                finalizeThoughtCard(msg.emotion);
             }
             break;
 
@@ -153,6 +191,22 @@ function handleDashboardMsg(msg) {
 
         case 'robot_state':
             updateRobotState(msg);
+            break;
+
+        case 'vision_faces':
+            latestVisionFaces = msg.faces || [];
+            updateEmotionDisplay();
+            break;
+
+        case 'smile_capture':
+            captureCount = msg.count || 0;
+            captureCountEl.textContent = captureCount;
+            spawnFloatPlus();
+            break;
+
+        case 'capture_reset':
+            captureCount = 0;
+            captureCountEl.textContent = '0';
             break;
 
         case 'mode_changed':
@@ -169,43 +223,159 @@ function handleDashboardMsg(msg) {
         case 'prompt_saved':
             showToast('Prompt saved: ' + msg.mode);
             break;
+
+        case 'volume':
+            setVolumeUI(msg.volume);
+            isMuted = msg.volume === 0;
+            if (!isMuted) volumeBeforeMute = msg.volume;
+            updateMuteUI();
+            break;
     }
 }
 
-// ── ASR idle timer ──────────────────────────────────────────────────
+// ── ASR active / idle ───────────────────────────────────────────────
+function triggerAsrActive() {
+    asrActive = true;
+    if (asrActiveTimer) clearTimeout(asrActiveTimer);
+    asrActiveTimer = setTimeout(() => { asrActive = false; }, 500);
+}
+
 function resetAsrIdleTimer() {
     if (asrIdleTimer) clearTimeout(asrIdleTimer);
     asrIdleTimer = setTimeout(() => {
-        asrTextEl.innerHTML = '<i>\u503E\u542C\u4E2D...</i>';
+        asrTextEl.innerHTML = '<i>Listening...</i>';
         asrTextEl.className = 'asr-text idle';
+        asrActive = false;
     }, 5000);
 }
 
-// ── Observation (monologue mode input) ──────────────────────────────
-let lastObsText = '';
-function updateObservation(text) {
-    lastObsText = text;
-    // Show observation as a small line above the monologue bubble
-    const obsEl = document.getElementById('observation-text');
-    if (obsEl) {
-        obsEl.textContent = text;
-        obsEl.style.display = 'block';
-    }
-}
+// ── Emotion display (center column) ─────────────────────────────────
+function updateEmotionDisplay() {
+    // Use vision_faces from dashboard WS, or fall back to direct vision WS data
+    const faces = (latestVisionFaces && latestVisionFaces.length > 0)
+        ? latestVisionFaces
+        : latestFaces;
 
-// ── Monologue bubble ────────────────────────────────────────────────
-function updateMonologue() {
-    if (isStreaming) {
-        monologueTextEl.innerHTML = currentLlmText + '<span class="typing-cursor"></span>';
-        monologueTextEl.className = 'monologue-text';
+    if (!faces || faces.length === 0) {
+        emotionPill.textContent = 'No face';
+        emotionLabel.textContent = 'Waiting for face...';
+        return;
+    }
+
+    // Largest face (first in list from dashboard, or pick largest from vision WS)
+    const face = faces[0];
+    const rawEmotion = face.emotion || 'neutral';
+    // Normalize: capitalize first letter for display
+    const emotion = rawEmotion.charAt(0).toUpperCase() + rawEmotion.slice(1);
+    const conf = Math.round((face.emotion_confidence || 0) * 100);
+    const color = EMOTION_COLORS[rawEmotion] || EMOTION_COLORS.neutral;
+
+    emotionPill.textContent = conf > 0 ? `${emotion} ${conf}%` : emotion;
+    emotionPill.style.borderColor = color;
+    emotionPill.style.color = color;
+
+    // Face description label
+    const FACE_LABELS = {
+        happy: 'Smiling face', happiness: 'Smiling face',
+        sad: 'Sad face', sadness: 'Sad face',
+        angry: 'Angry face', anger: 'Angry face',
+        surprised: 'Surprised face', surprise: 'Surprised face',
+        fear: 'Fearful face',
+        neutral: 'Neutral face',
+        contempt: 'Contemptuous face',
+        disgust: 'Disgusted face',
+    };
+    const identity = face.identity;
+    if (identity && identity !== '?') {
+        emotionLabel.textContent = identity;
     } else {
-        const text = lastLlmText || '...';
-        monologueTextEl.textContent = text;
-        monologueTextEl.className = 'monologue-text idle';
+        emotionLabel.textContent = FACE_LABELS[rawEmotion.toLowerCase()] || (emotion + ' face');
     }
 }
 
-// ── State & Robot State ─────────────────────────────────────────────
+// ── Thought bubbles (right column) ──────────────────────────────────
+function addStreamingCard() {
+    // Remove existing streaming card if any
+    const existing = thoughtList.querySelector('.thought-card.streaming');
+    if (existing) existing.remove();
+
+    const card = document.createElement('div');
+    card.className = 'thought-card streaming';
+    card.innerHTML = '<div class="thought-text"></div>';
+    thoughtList.prepend(card);
+
+    trimThoughts();
+}
+
+function updateStreamingCard() {
+    const card = thoughtList.querySelector('.thought-card.streaming');
+    if (!card) return;
+    const textEl = card.querySelector('.thought-text');
+    textEl.innerHTML = currentLlmText + '<span class="typing-cursor"></span>';
+}
+
+function finalizeThoughtCard(emotion) {
+    const card = thoughtList.querySelector('.thought-card.streaming');
+    if (!card) {
+        // No streaming card, create completed one
+        const newCard = document.createElement('div');
+        newCard.className = 'thought-card';
+        const emoji = emotion ? (EMOTION_EMOJI[emotion] || '') : '';
+        newCard.innerHTML = `<div class="thought-text">${escapeHtml(currentLlmText)}</div>` +
+            (emoji ? `<span class="thought-emoji">${emoji}</span>` : '');
+        thoughtList.prepend(newCard);
+    } else {
+        card.classList.remove('streaming');
+        const textEl = card.querySelector('.thought-text');
+        textEl.textContent = currentLlmText;
+        const emoji = emotion ? (EMOTION_EMOJI[emotion] || '') : '';
+        if (emoji) {
+            const emojiEl = document.createElement('span');
+            emojiEl.className = 'thought-emoji';
+            emojiEl.textContent = emoji;
+            card.appendChild(emojiEl);
+        }
+    }
+
+    trimThoughts();
+}
+
+function trimThoughts() {
+    const cards = thoughtList.querySelectorAll('.thought-card');
+    if (cards.length > MAX_THOUGHTS) {
+        for (let i = MAX_THOUGHTS; i < cards.length; i++) {
+            cards[i].classList.add('fading');
+            setTimeout(() => cards[i].remove(), 300);
+        }
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// ── Capture counter ─────────────────────────────────────────────────
+function spawnFloatPlus() {
+    const area = document.getElementById('capture-float-area');
+    const el = document.createElement('div');
+    el.className = 'capture-float';
+    el.textContent = '+1';
+    area.appendChild(el);
+    setTimeout(() => el.remove(), 1300);
+}
+
+const captureResetBtn = document.getElementById('capture-reset');
+if (captureResetBtn) {
+    captureResetBtn.onclick = () => {
+        if (dashboardWs && dashboardWs.readyState === 1) {
+            dashboardWs.send(JSON.stringify({ type: 'clear_captures' }));
+        }
+    };
+}
+
+// ── State ───────────────────────────────────────────────────────────
 function updateState(state) {
     const el = document.getElementById('robot-state');
     if (el) {
@@ -215,20 +385,70 @@ function updateState(state) {
 }
 
 function updateRobotState(msg) {
-    // Mode
     if (msg.mode) {
         currentMode = msg.mode;
         syncModeUI();
     }
-
-    // Robot connected indicator
+    if (msg.capture_count !== undefined) {
+        captureCount = msg.capture_count;
+        captureCountEl.textContent = captureCount;
+    }
     document.getElementById('dot-robot').className = 'dot live';
 }
 
-// ── Canvas overlay (face detection) ─────────────────────────────────
+// ── Face crop pipeline ──────────────────────────────────────────────
+function drawFaceCrop() {
+    const vp = document.querySelector('.face-viewport');
+
+    if (!latestFaces || latestFaces.length === 0 || videoEl.style.display === 'none') {
+        faceCropCtx.clearRect(0, 0, faceCropCanvas.width, faceCropCanvas.height);
+        vp.classList.remove('has-face');
+        requestAnimationFrame(drawFaceCrop);
+        return;
+    }
+
+    // Find largest face
+    let largest = latestFaces[0];
+    let maxArea = 0;
+    for (const f of latestFaces) {
+        const area = (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]);
+        if (area > maxArea) { maxArea = area; largest = f; }
+    }
+
+    vp.classList.add('has-face');
+
+    // Map normalized bbox to video natural size
+    const natW = videoEl.naturalWidth || 640;
+    const natH = videoEl.naturalHeight || 360;
+    const [x1, y1, x2, y2] = largest.bbox;
+    let sx = x1 * natW;
+    let sy = y1 * natH;
+    let sw = (x2 - x1) * natW;
+    let sh = (y2 - y1) * natH;
+
+    // Add padding (30%)
+    const padW = sw * 0.3;
+    const padH = sh * 0.3;
+    sx = Math.max(0, sx - padW);
+    sy = Math.max(0, sy - padH);
+    sw = Math.min(natW - sx, sw + padW * 2);
+    sh = Math.min(natH - sy, sh + padH * 2);
+
+    // Draw cropped face
+    faceCropCtx.clearRect(0, 0, faceCropCanvas.width, faceCropCanvas.height);
+    try {
+        faceCropCtx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, faceCropCanvas.width, faceCropCanvas.height);
+    } catch(e) {
+        // Image not loaded yet
+    }
+
+    requestAnimationFrame(drawFaceCrop);
+}
+
+// ── Canvas overlay (face detection boxes on video) ──────────────────
 function getImageRect() {
-    // Calculate actual rendered image area within object-fit: contain element
-    const rect = videoEl.getBoundingClientRect();
+    const container = document.querySelector('.video-container');
+    const rect = container.getBoundingClientRect();
     const natW = videoEl.naturalWidth || 640;
     const natH = videoEl.naturalHeight || 360;
     const scale = Math.min(rect.width / natW, rect.height / natH);
@@ -240,7 +460,8 @@ function getImageRect() {
 }
 
 function drawOverlay() {
-    const rect = videoEl.getBoundingClientRect();
+    const container = document.querySelector('.video-container');
+    const rect = container.getBoundingClientRect();
     canvasEl.width = rect.width;
     canvasEl.height = rect.height;
     ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
@@ -250,7 +471,6 @@ function drawOverlay() {
         return;
     }
 
-    // Map normalized coords to actual image area (not full canvas)
     const ir = getImageRect();
     const cw = ir.imgW;
     const ch = ir.imgH;
@@ -266,45 +486,31 @@ function drawOverlay() {
         const bw = (x2 - x1) * cw;
         const bh = (y2 - y1) * ch;
 
-        const cornerLen = Math.min(bw, bh) * 0.2;
+        const cornerLen = Math.min(bw, bh) * 0.25;
         ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        ctx.globalAlpha = 0.8;
+        ctx.lineWidth = 4;
+        ctx.globalAlpha = 0.9;
 
-        // Top-left corner
+        // Corner brackets
         ctx.beginPath();
-        ctx.moveTo(bx, by + cornerLen);
-        ctx.lineTo(bx, by);
-        ctx.lineTo(bx + cornerLen, by);
+        ctx.moveTo(bx, by + cornerLen); ctx.lineTo(bx, by); ctx.lineTo(bx + cornerLen, by);
         ctx.stroke();
-
-        // Top-right corner
         ctx.beginPath();
-        ctx.moveTo(bx + bw - cornerLen, by);
-        ctx.lineTo(bx + bw, by);
-        ctx.lineTo(bx + bw, by + cornerLen);
+        ctx.moveTo(bx + bw - cornerLen, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + cornerLen);
         ctx.stroke();
-
-        // Bottom-left corner
         ctx.beginPath();
-        ctx.moveTo(bx, by + bh - cornerLen);
-        ctx.lineTo(bx, by + bh);
-        ctx.lineTo(bx + cornerLen, by + bh);
+        ctx.moveTo(bx, by + bh - cornerLen); ctx.lineTo(bx, by + bh); ctx.lineTo(bx + cornerLen, by + bh);
         ctx.stroke();
-
-        // Bottom-right corner
         ctx.beginPath();
-        ctx.moveTo(bx + bw - cornerLen, by + bh);
-        ctx.lineTo(bx + bw, by + bh);
-        ctx.lineTo(bx + bw, by + bh - cornerLen);
+        ctx.moveTo(bx + bw - cornerLen, by + bh); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw, by + bh - cornerLen);
         ctx.stroke();
 
         ctx.globalAlpha = 1.0;
 
-        // ── Identity label (above bbox) ──
+        // Identity label
         const identity = face.identity;
         if (identity && identity !== '?') {
-            ctx.font = 'bold 12px monospace';
+            ctx.font = 'bold 14px sans-serif';
             const idMetrics = ctx.measureText(identity);
             const idW = idMetrics.width + 12;
             const idH = 18;
@@ -319,21 +525,19 @@ function drawOverlay() {
             ctx.fillText(identity, idX + 6, idY + 13);
         }
 
-        // ── Emotion pill (below bbox) ──
+        // Emotion pill below bbox
         const emotion = face.emotion || 'neutral';
         const conf = ((face.emotion_confidence || 0) * 100).toFixed(0);
         const pillText = conf > 0 ? `${emotion} ${conf}%` : emotion;
-        ctx.font = '11px monospace';
+        ctx.font = 'bold 14px sans-serif';
         const pillMetrics = ctx.measureText(pillText);
-        const pillW = pillMetrics.width + 16;
-        const pillH = 20;
+        const pillW = pillMetrics.width + 20;
+        const pillH = 24;
         const pillX = bx + (bw - pillW) / 2;
         let pillY = by + bh + 6;
         if (pillY + pillH > oy + ch - 4) pillY = by + bh - pillH - 4;
 
-        // Pill background
-        const pillAlpha = 0.7;
-        ctx.globalAlpha = pillAlpha;
+        ctx.globalAlpha = 0.7;
         ctx.fillStyle = hexToRgba(color, 0.25);
         roundRect(ctx, pillX, pillY, pillW, pillH, 10);
         ctx.fill();
@@ -344,9 +548,9 @@ function drawOverlay() {
 
         ctx.globalAlpha = 1.0;
         ctx.fillStyle = color;
-        ctx.fillText(pillText, pillX + 8, pillY + 14);
+        ctx.fillText(pillText, pillX + 10, pillY + 17);
 
-        // ── 5-point landmarks ──
+        // Landmarks
         if (face.landmarks) {
             ctx.fillStyle = '#00d2ff';
             for (const [lx, ly] of face.landmarks) {
@@ -382,9 +586,10 @@ function hexToRgba(hex, alpha) {
     return `rgba(${r},${g},${b},${alpha})`;
 }
 
-// ── MJPEG video (fetch + ReadableStream, vision-trt has CORS enabled) ─
+// ── MJPEG video stream ──────────────────────────────────────────────
 function setupVideo() {
-    const streamUrl = `http://${VISION_HOST}/stream`;
+    // Use same-origin proxy to avoid CORS/cross-port issues
+    const streamUrl = `/stream`;
 
     async function readStream() {
         try {
@@ -396,12 +601,10 @@ function setupVideo() {
                 const { done, value } = await reader.read();
                 if (done) break;
 
-                // Append chunk
                 const tmp = new Uint8Array(buf.length + value.length);
                 tmp.set(buf); tmp.set(value, buf.length);
                 buf = tmp;
 
-                // Extract complete JPEG frames (FFD8..FFD9)
                 let start = -1;
                 for (let i = 0; i < buf.length - 1; i++) {
                     if (buf[i] === 0xFF && buf[i+1] === 0xD8) start = i;
@@ -415,7 +618,7 @@ function setupVideo() {
                         noVideoEl.style.display = 'none';
                         if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
                         buf = buf.slice(i + 2);
-                        break;  // process one frame per read cycle
+                        break;
                     }
                 }
             }
@@ -436,6 +639,9 @@ function initSettings() {
     document.getElementById('settings-open').onclick = () => {
         overlay.classList.add('open');
         loadFaces();
+        if (dashboardWs && dashboardWs.readyState === 1) {
+            dashboardWs.send(JSON.stringify({ type: 'get_volume' }));
+        }
     };
     document.getElementById('settings-close').onclick = () => {
         overlay.classList.remove('open');
@@ -500,6 +706,66 @@ function initSettings() {
         document.getElementById('prompt-monologue').value = '';
         savePrompt('monologue', '');
     };
+
+    // Volume control
+    initVolume();
+}
+
+let currentVolume = 80;
+let isMuted = false;
+let volumeBeforeMute = 80;
+
+function initVolume() {
+    const slider = document.getElementById('volume-slider');
+    const valueEl = document.getElementById('volume-value');
+    const muteBtn = document.getElementById('volume-mute');
+
+    slider.oninput = () => {
+        const vol = parseInt(slider.value);
+        valueEl.textContent = vol + '%';
+        currentVolume = vol;
+        if (vol > 0) { isMuted = false; volumeBeforeMute = vol; }
+        else { isMuted = true; }
+        updateMuteUI();
+    };
+    slider.onchange = () => {
+        sendVolume(parseInt(slider.value));
+    };
+    muteBtn.onclick = () => {
+        isMuted = !isMuted;
+        if (isMuted) {
+            volumeBeforeMute = currentVolume || 80;
+            setVolumeUI(0);
+            sendVolume(0);
+        } else {
+            setVolumeUI(volumeBeforeMute);
+            sendVolume(volumeBeforeMute);
+        }
+        updateMuteUI();
+    };
+
+    if (dashboardWs && dashboardWs.readyState === 1) {
+        dashboardWs.send(JSON.stringify({ type: 'get_volume' }));
+    }
+}
+
+function setVolumeUI(vol) {
+    currentVolume = vol;
+    document.getElementById('volume-slider').value = vol;
+    document.getElementById('volume-value').textContent = vol + '%';
+}
+
+function updateMuteUI() {
+    const btn = document.getElementById('volume-mute');
+    btn.classList.toggle('muted', isMuted);
+    document.getElementById('volume-icon-on').style.display = isMuted ? 'none' : '';
+    document.getElementById('volume-icon-off').style.display = isMuted ? '' : 'none';
+}
+
+function sendVolume(vol) {
+    if (dashboardWs && dashboardWs.readyState === 1) {
+        dashboardWs.send(JSON.stringify({ type: 'set_volume', volume: vol }));
+    }
 }
 
 function syncModeUI() {
@@ -651,7 +917,7 @@ async function importFaces() {
     input.value = '';
 }
 
-// ── Prompt Management ────────────────────────────────────────────────
+// ── Prompt Management ───────────────────────────────────────────────
 function loadPrompts() {
     if (!dashboardWs || dashboardWs.readyState !== 1) return;
     dashboardWs.send(JSON.stringify({ type: 'get_prompts' }));
@@ -676,6 +942,7 @@ function init() {
     connectDashboard();
     initSettings();
     requestAnimationFrame(drawOverlay);
+    requestAnimationFrame(drawFaceCrop);
 }
 
 init();
