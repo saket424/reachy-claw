@@ -295,6 +295,62 @@ class KokoroTTS(TTSBackend):
             yield audio, sample_rate
 
 
+class _ReconnectingTTS(TTSBackend):
+    """Proxy that starts with a fallback and hot-swaps to the preferred backend."""
+
+    def __init__(self, fallback: TTSBackend, factory, probe_interval: float = 10.0):
+        self._backend = fallback
+        self._factory = factory  # callable that returns preferred backend or raises
+        self._probe_interval = probe_interval
+        self._task: asyncio.Task | None = None
+        self._probe_pending = False
+
+    @property
+    def supports_streaming(self) -> bool:
+        return self._backend.supports_streaming
+
+    def start_probing(self) -> None:
+        """Schedule background probe loop. Safe to call with or without a running loop."""
+        if self._task is not None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            self._task = loop.create_task(self._probe_loop())
+        except RuntimeError:
+            self._probe_pending = True
+
+    async def _probe_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._probe_interval)
+            try:
+                preferred = await asyncio.to_thread(self._factory)
+                old = self._backend
+                self._backend = preferred
+                logger.info("TTS reconnected to preferred backend")
+                old.cleanup()
+                return
+            except Exception:
+                logger.debug("TTS preferred backend still unavailable, retrying...")
+
+    async def synthesize(self, text: str) -> str:
+        if self._probe_pending:
+            self._probe_pending = False
+            try:
+                self._task = asyncio.create_task(self._probe_loop())
+            except RuntimeError:
+                pass
+        return await self._backend.synthesize(text)
+
+    async def synthesize_streaming(self, text: str):
+        async for chunk in self._backend.synthesize_streaming(text):
+            yield chunk
+
+    def cleanup(self) -> None:
+        if self._task and not self._task.done():
+            self._task.cancel()
+        self._backend.cleanup()
+
+
 def create_tts_backend(
     backend: str = "elevenlabs",
     voice: str | None = None,
@@ -343,12 +399,16 @@ def create_tts_backend(
 
             fallback_name = "say" if platform.system() == "Darwin" else "none"
             logger.warning(
-                f"TTS backend {name!r} not available ({e}), falling back to {fallback_name}"
+                f"TTS backend {name!r} not available ({e}), "
+                f"falling back to {fallback_name} (will retry in background)"
             )
             fallback_info = get_tts_info(fallback_name)
             if fallback_info is None:
                 raise
-            return fallback_info.cls()
+            fallback = fallback_info.cls()
+            proxy = _ReconnectingTTS(fallback, lambda: info.cls(**filtered))
+            proxy.start_probing()
+            return proxy
         raise
 
     return instance

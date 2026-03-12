@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -453,6 +454,79 @@ class ParaformerStreamingSTT(STTBackend):
             self._ws = None
 
 
+class _ReconnectingSTT(STTBackend):
+    """Proxy that starts with a fallback and hot-swaps to the preferred backend."""
+
+    def __init__(self, fallback: STTBackend, factory, probe_url: str,
+                 probe_interval: float = 10.0):
+        self._backend = fallback
+        self._factory = factory  # callable that returns preferred backend
+        self._probe_url = probe_url
+        self._probe_interval = probe_interval
+        self._task: asyncio.Task | None = None
+        self._probe_pending = False
+
+    @property
+    def supports_streaming(self) -> bool:
+        return self._backend.supports_streaming
+
+    def start_probing(self) -> None:
+        """Schedule background probe loop. Safe to call with or without a running loop."""
+        if self._task is not None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            self._task = loop.create_task(self._probe_loop())
+        except RuntimeError:
+            # No running loop yet — defer until preload() is called from async context
+            self._probe_pending = True
+
+    async def _probe_loop(self) -> None:
+        import urllib.request
+        while True:
+            await asyncio.sleep(self._probe_interval)
+            try:
+                await asyncio.to_thread(
+                    urllib.request.urlopen, f"{self._probe_url}/health", None, 3
+                )
+                preferred = self._factory()
+                preferred.preload()
+                self._backend = preferred
+                logger.info("STT reconnected to preferred backend")
+                return
+            except Exception:
+                logger.debug("STT preferred backend still unavailable, retrying...")
+
+    def preload(self) -> None:
+        self._backend.preload()
+        # Deferred probe start — now we're likely called from async context
+        if self._probe_pending:
+            self._probe_pending = False
+            try:
+                loop = asyncio.get_running_loop()
+                self._task = loop.create_task(self._probe_loop())
+            except RuntimeError:
+                pass  # Still no loop — probing will not start
+
+    def transcribe(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
+        return self._backend.transcribe(audio, sample_rate)
+
+    def transcribe_file(self, path: Path) -> str:
+        return self._backend.transcribe_file(path)
+
+    def start_stream(self, sample_rate: int = 16000) -> None:
+        self._backend.start_stream(sample_rate)
+
+    def feed_chunk(self, chunk: np.ndarray) -> PartialResult | None:
+        return self._backend.feed_chunk(chunk)
+
+    def finish_stream(self) -> str:
+        return self._backend.finish_stream()
+
+    def cancel_stream(self) -> None:
+        self._backend.cancel_stream()
+
+
 def create_stt_backend(config: Config) -> STTBackend:
     """Create STT backend by name using the registry."""
     from reachy_claw.backend_registry import get_stt_info, get_stt_names
@@ -490,12 +564,15 @@ def create_stt_backend(config: Config) -> STTBackend:
     logger.info(f"Using STT backend: {backend}")
     instance = info.cls(**filtered)
 
-    # Fallback: if remote backend is unreachable, fall back to whisper
+    # Fallback: if remote backend is unreachable, fall back with background retry
     if backend in ("paraformer-streaming", "sensevoice"):
         try:
             instance.preload()
         except Exception as e:
-            logger.warning(f"STT backend {backend!r} not available ({e}), falling back to whisper")
+            logger.warning(
+                f"STT backend {backend!r} not available ({e}), "
+                f"falling back to whisper (will retry in background)"
+            )
             from reachy_claw.backend_registry import get_stt_info as _get_info
 
             fallback_info = _get_info("whisper")
@@ -504,6 +581,15 @@ def create_stt_backend(config: Config) -> STTBackend:
             fallback_kwargs = {}
             if hasattr(config, "whisper_model"):
                 fallback_kwargs["model_name"] = config.whisper_model
-            instance = fallback_info.cls(**fallback_kwargs)
+            fallback = fallback_info.cls(**fallback_kwargs)
+
+            probe_url = filtered.get("base_url", "http://localhost:8000")
+            proxy = _ReconnectingSTT(
+                fallback,
+                factory=lambda: info.cls(**filtered),
+                probe_url=probe_url,
+            )
+            proxy.start_probing()
+            return proxy
 
     return instance

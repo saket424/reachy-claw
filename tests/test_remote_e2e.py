@@ -357,9 +357,9 @@ class TestFallbackBehavior:
     """These tests don't need the speech service — they test fallback when unreachable."""
 
     def test_fallback_stt_when_unreachable(self):
-        """STT factory should fall back to whisper when remote is unreachable."""
+        """STT factory should return reconnecting proxy with whisper fallback."""
         from reachy_claw.config import Config
-        from reachy_claw.stt import WhisperSTT, create_stt_backend
+        from reachy_claw.stt import WhisperSTT, _ReconnectingSTT, create_stt_backend
 
         config = Config(
             stt_backend="paraformer-streaming",
@@ -367,21 +367,23 @@ class TestFallbackBehavior:
             whisper_model="tiny",
         )
         backend = create_stt_backend(config)
-        assert isinstance(backend, WhisperSTT)
+        assert isinstance(backend, _ReconnectingSTT)
+        assert isinstance(backend._backend, WhisperSTT)
 
     def test_fallback_tts_when_unreachable(self):
-        """TTS factory should fall back to say/none when kokoro is unreachable."""
+        """TTS factory should return reconnecting proxy with fallback."""
         import platform
 
         from reachy_claw.config import Config
-        from reachy_claw.tts import MacOSSayTTS, NoopTTS, create_tts_backend
+        from reachy_claw.tts import MacOSSayTTS, NoopTTS, _ReconnectingTTS, create_tts_backend
 
         config = Config(speech_service_url="http://192.0.2.1:9999")
         backend = create_tts_backend(
             backend="kokoro",
             config=config,
         )
+        assert isinstance(backend, _ReconnectingTTS)
         if platform.system() == "Darwin":
-            assert isinstance(backend, MacOSSayTTS)
+            assert isinstance(backend._backend, MacOSSayTTS)
         else:
-            assert isinstance(backend, NoopTTS)
+            assert isinstance(backend._backend, NoopTTS)
