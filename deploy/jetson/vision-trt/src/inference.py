@@ -46,11 +46,16 @@ class FaceResult:
 class VisionPipeline:
     """Full face analysis pipeline using TensorRT engines."""
 
+    # Identity recognized → hold for this many frames even if some fail
+    IDENTITY_HOLD_FRAMES = 15
+
     def __init__(self, engines: dict, face_db, config):
         self._engines = engines
         self._face_db = face_db
         self._config = config
         self._emotion_windows: dict[int, deque] = {}  # track_id → recent emotions
+        # Identity smoothing: bucket → (name, distance, frames_remaining)
+        self._identity_cache: dict[int, tuple[str, float, int]] = {}
         self._frame_count = 0
 
     def process_frame(self, frame: np.ndarray) -> list[FaceResult]:
@@ -91,16 +96,20 @@ class VisionPipeline:
                 confidence=conf,
             )
 
+            # Spatial bucket for temporal smoothing (shared by identity + emotion)
+            bucket = int((cx + 1) * 5) * 10 + int((cy + 1) * 5)
+
             # Step 2: Face alignment + embedding
             if arcface is not None and len(landmarks_px) == 5:
                 aligned = self._align_face(frame, landmarks_px)
                 embedding = self._extract_embedding(arcface, aligned)
                 result.embedding = embedding.tolist()
 
-                # Identity matching
+                # Identity matching with temporal smoothing
                 name, dist = self._face_db.identify(
                     embedding, self._config.RECOGNITION_THRESHOLD
                 )
+                name, dist = self._smooth_identity(bucket, name, dist)
                 result.identity = name
                 result.identity_distance = dist
 
@@ -110,9 +119,6 @@ class VisionPipeline:
                 emotion, emotion_conf = self._classify_emotion(
                     emotion_engine, face_crop
                 )
-                # Temporal smoothing — use spatial bucket as track_id
-                # Quantize center to grid cells so nearby positions share a window
-                bucket = int((cx + 1) * 5) * 10 + int((cy + 1) * 5)
                 smoothed = self._smooth_emotion(bucket, emotion)
                 result.emotion = smoothed
                 result.emotion_confidence = emotion_conf
@@ -358,6 +364,34 @@ class VisionPipeline:
 
         idx = int(probs.argmax())
         return EMOTION_LABELS[idx], float(probs[idx])
+
+    def _smooth_identity(
+        self, bucket: int, name: str | None, dist: float
+    ) -> tuple[str | None, float]:
+        """Temporal smoothing for identity: hold recognized name for N frames.
+
+        Once a face is recognized, keep that identity even if a few frames
+        fail to match (due to angle/lighting changes). Only drop the identity
+        after IDENTITY_HOLD_FRAMES consecutive misses.
+        """
+        cached = self._identity_cache.get(bucket)
+
+        if name is not None:
+            # Fresh recognition — reset hold counter
+            self._identity_cache[bucket] = (name, dist, self.IDENTITY_HOLD_FRAMES)
+            return name, dist
+
+        if cached is not None:
+            cached_name, cached_dist, frames_left = cached
+            if frames_left > 0:
+                # Hold previous identity
+                self._identity_cache[bucket] = (cached_name, cached_dist, frames_left - 1)
+                return cached_name, cached_dist
+            else:
+                # Expired
+                del self._identity_cache[bucket]
+
+        return None, dist
 
     def _smooth_emotion(self, track_id: int, emotion: str) -> str:
         """5-frame sliding window vote for emotion smoothing."""
