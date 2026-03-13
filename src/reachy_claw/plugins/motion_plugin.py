@@ -42,24 +42,29 @@ class MotionPlugin(Plugin):
             "smoothing": 0.50, "deadband": 1.0, "poll": 0.03,
             "body_smoothing": 0.45, "body_deadband": 1.0,
             "max_step": 8.0, "body_max_step": 5.0,
+            "idle_animations": True,
         },
         "moderate": {
             "smoothing": 0.35, "deadband": 2.0, "poll": 0.05,
             "body_smoothing": 0.35, "body_deadband": 2.0,
             "max_step": 5.0, "body_max_step": 3.0,
+            "idle_animations": False,
         },
         "smart": {
             "smoothing": 0.15, "deadband": 3.0, "poll": 0.10,
             "body_smoothing": 0.15, "body_deadband": 4.0,
             "max_step": 3.0, "body_max_step": 2.0,
+            "idle_animations": False,
         },
     }
 
     def __init__(self, app):
         super().__init__(app)
-        # Motor enable/disable (sleep mode)
-        self._motor_enabled = True
-        self._motor_preset = "moderate"
+        # Motor enable/disable (sleep mode) — restore from persisted config
+        self._motor_enabled = getattr(app.config, "motor_enabled", True)
+        self._motor_preset = getattr(app.config, "motor_preset", "moderate")
+        if self._motor_preset not in self.MOTOR_PRESETS:
+            self._motor_preset = "moderate"
 
         # Head tracking EMA state (Stewart platform — pitch/roll mirroring)
         self._current_yaw = 0.0
@@ -113,8 +118,10 @@ class MotionPlugin(Plugin):
         self._body_max_step = params["body_max_step"]
         # poll_interval is read each iteration from config, so update config
         self.app.config.motion_head_tracking_poll_interval = params["poll"]
-        logger.info("Motor preset: %s (smoothing=%.2f, deadband=%.1f°, max_step=%.1f°, poll=%.3fs)",
-                     preset, params["smoothing"], params["deadband"], params["max_step"], params["poll"])
+        self.app.config.idle_animations = params.get("idle_animations", False)
+        logger.info("Motor preset: %s (smoothing=%.2f, deadband=%.1f°, max_step=%.1f°, poll=%.3fs, idle=%s)",
+                     preset, params["smoothing"], params["deadband"], params["max_step"], params["poll"],
+                     self.app.config.idle_animations)
 
     def get_motor_state(self) -> dict:
         """Return current motor state for dashboard sync."""
