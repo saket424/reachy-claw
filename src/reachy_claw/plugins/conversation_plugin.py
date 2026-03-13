@@ -150,12 +150,19 @@ class ConversationPlugin(Plugin):
                     system_prompt = config.ollama_system_prompt or DEFAULT_SYSTEM_PROMPT
                     skip_emotion = False
 
+                # Monologue needs history to avoid repeating itself
+                history = config.ollama_max_history
+                temperature = config.ollama_temperature
+                if self._monologue_mode:
+                    history = max(history, 5)
+                    temperature = max(temperature, 0.9)
+
                 ollama_cfg = OllamaConfig(
                     base_url=config.ollama_base_url,
                     model=config.ollama_model,
                     system_prompt=system_prompt,
-                    temperature=config.ollama_temperature,
-                    max_history=config.ollama_max_history,
+                    temperature=temperature,
+                    max_history=history,
                     skip_emotion_extraction=skip_emotion,
                 )
                 self._client = OllamaClient(ollama_cfg)
@@ -453,6 +460,9 @@ class ConversationPlugin(Plugin):
                     self.app.config.ollama_monologue_prompt or MONOLOGUE_SYSTEM_PROMPT
                 )
                 self._client._config.skip_emotion_extraction = False
+                # Monologue needs history so the model doesn't repeat itself
+                self._client._config.max_history = max(self._client._config.max_history, 5)
+                self._client._config.temperature = max(self._client._config.temperature, 0.9)
             else:
                 self._client._config.system_prompt = (
                     self.app.config.ollama_system_prompt or DEFAULT_SYSTEM_PROMPT
@@ -727,6 +737,11 @@ class ConversationPlugin(Plugin):
         max_frames = int(self.app.config.max_recording_duration * self.app.config.sample_rate / 1024)
         confirm_frames = self.app.config.barge_in_confirm_frames
         streaming_stt = self._stt.supports_streaming
+        # Streaming STT: connect once at start, feed continuously
+        if streaming_stt:
+            await asyncio.to_thread(
+                self._stt.start_stream, self.app.config.sample_rate
+            )
 
         self._set_state(ConvState.IDLE)
         self._last_speech_time = time.monotonic()
@@ -803,69 +818,63 @@ class ConversationPlugin(Plugin):
                 continue
 
             # ── IDLE / LISTENING states: accumulate speech ──
+            # Always feed audio to STT when connected (keeps recognition continuous)
+            if streaming_stt:
+                partial = await asyncio.to_thread(self._stt.feed_chunk, chunk)
+                if partial and partial.text:
+                    logger.debug(f"Partial: \"{partial.text}\" (final={partial.is_final}, stable={partial.is_stable})")
+                    self.app.events.emit("asr_partial", {"text": partial.text})
+
             has_speech = await asyncio.to_thread(self._audio._detect_speech, chunk)
             if has_speech:
                 if self._state == ConvState.IDLE:
                     self._set_state(ConvState.LISTENING)
                     logger.info("Speech detected!")
-                    if streaming_stt:
-                        await asyncio.to_thread(
-                            self._stt.start_stream, self.app.config.sample_rate
-                        )
                 speech_frames.append(chunk)
                 silence_count = 0
 
-                # Feed chunk to streaming STT
-                if streaming_stt:
-                    partial = await asyncio.to_thread(self._stt.feed_chunk, chunk)
-                    if partial and partial.text:
-                        logger.debug(f"Partial: \"{partial.text}\" (final={partial.is_final}, stable={partial.is_stable})")
-                        self.app.events.emit("asr_partial", {"text": partial.text})
-                        # If ASR sent is_final, skip silence wait and process immediately
-                        if partial.is_final:
-                            logger.info("ASR is_final received — skipping silence wait")
-                            self._set_state(ConvState.TRANSCRIBING)
-                            try:
-                                text = await asyncio.wait_for(
-                                    asyncio.to_thread(self._stt.finish_stream),
-                                    timeout=10.0,
-                                )
-                            except asyncio.TimeoutError:
-                                logger.error("STT finish_stream() timed out")
-                                text = partial.text  # use last partial as fallback
-                            speech_frames = []
-                            silence_count = 0
-                            barge_in_count = 0
-                            if self._vad:
-                                self._vad.reset()
-                            self._spawn_task(
-                                self._process_and_send(text),
-                                name="conversation.process_and_send",
-                            )
-                            continue
+                # If ASR sent is_final, skip silence wait and process immediately
+                if streaming_stt and partial and partial.is_final:
+                    text = partial.text
+                    logger.info(f"ASR is_final received: \"{text}\"")
+                    speech_frames = []
+                    silence_count = 0
+                    barge_in_count = 0
+                    if self._vad:
+                        self._vad.reset()
+                    self._spawn_task(
+                        self._process_and_send(text),
+                        name="conversation.process_and_send",
+                    )
+                    continue
 
             elif self._state == ConvState.LISTENING:
                 silence_count += 1
                 speech_frames.append(chunk)
+                # Audio already fed to STT at top of this block
 
-                # Keep feeding silence to streaming STT (it needs continuity)
-                if streaming_stt:
-                    await asyncio.to_thread(self._stt.feed_chunk, chunk)
+                # Check if STT sent is_final during silence
+                if streaming_stt and partial and partial.is_final:
+                    text = partial.text
+                    logger.info(f"ASR is_final during silence: \"{text}\"")
+                    speech_frames = []
+                    silence_count = 0
+                    barge_in_count = 0
+                    if self._vad:
+                        self._vad.reset()
+                    self._spawn_task(
+                        self._process_and_send(text),
+                        name="conversation.process_and_send",
+                    )
+                    continue
 
                 if silence_count >= max_silence or len(speech_frames) >= max_frames:
-                    # End of utterance
+                    # End of utterance by silence timeout
                     self._set_state(ConvState.TRANSCRIBING)
 
                     if streaming_stt:
-                        # Finish streaming — get final text
-                        try:
-                            text = await asyncio.wait_for(
-                                asyncio.to_thread(self._stt.finish_stream),
-                                timeout=10.0,
-                            )
-                        except asyncio.TimeoutError:
-                            logger.error("STT finish_stream() timed out")
-                            text = ""
+                        # Get whatever text STT has accumulated
+                        text = await asyncio.to_thread(self._stt.finish_stream)
                         speech_frames = []
                         silence_count = 0
                         barge_in_count = 0

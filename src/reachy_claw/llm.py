@@ -138,8 +138,11 @@ class OllamaClient:
         """Call Ollama /api/chat with streaming and fire callbacks."""
         run_id = f"ollama-{id(self)}"
 
-        # Build messages
-        messages = [{"role": "system", "content": self._config.system_prompt}]
+        # Build messages — inject current time into system prompt
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        system = f"Current time: {now}\n{self._config.system_prompt}"
+        messages = [{"role": "system", "content": system}]
         if self._config.max_history > 0:
             messages.extend(self._history[-(self._config.max_history * 2):])
         messages.append({"role": "user", "content": user_text})
