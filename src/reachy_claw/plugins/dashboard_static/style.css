@@ -404,7 +404,7 @@ body {
 }
 
 .thought-text {
-    font-size: clamp(26px, 2.2vw, 36px);
+    font-size: clamp(20px, 1.6vw, 28px);
     font-weight: 600;
     line-height: 1.4;
     color: var(--text-bright);
