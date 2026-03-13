@@ -41,7 +41,7 @@ services:
         max-file: "3"
 
   reachy-claw:
-    image: reachy-claw:v1.11
+    image: reachy-claw:v1.13
     container_name: reachy-claw
     restart: unless-stopped
     network_mode: host

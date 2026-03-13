@@ -88,7 +88,7 @@ class Config:
     ollama_system_prompt: str = ""  # empty = use default
     ollama_monologue_prompt: str = ""  # empty = use default MONOLOGUE_SYSTEM_PROMPT
     ollama_temperature: float = 0.7
-    ollama_max_history: int = 0  # conversation turns to keep (0 = stateless)
+    ollama_max_history: int = 5  # conversation turns to keep (0 = stateless)
 
     # Behavior
     wake_word: str | None = None
