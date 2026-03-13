@@ -48,11 +48,12 @@ services:
     privileged: true
     volumes:
       - ./reachy-claw.jetson.yaml:/app/reachy-claw.yaml:ro
+      - ${DATA_DIR:-~/reachy-data}/reachy-claw:/app/data
       - /dev/shm:/dev/shm
       - /run/udev:/run/udev:ro
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      - DATA_DIR=${DATA_DIR:-~/reachy-data}
+      - DATA_DIR=/app/data
     depends_on:
       reachy-daemon:
         condition: service_healthy
