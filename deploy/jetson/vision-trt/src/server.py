@@ -643,18 +643,18 @@ async def capture_count():
 @app.post("/api/faces/enroll")
 async def enroll_face(name: str = Query(...)):
     if not service.face_db or not service.pipeline:
-        return JSONResponse({"error": "\1"}, status_code=\2)
+        return JSONResponse({"error": "Service not ready"}, status_code=503)
 
     if not service.capture:
-        return JSONResponse({"error": "\1"}, status_code=\2)
+        return JSONResponse({"error": "Camera not available"}, status_code=503)
 
     frame = service.capture.get_inference_frame()
     if frame is None:
-        return JSONResponse({"error": "\1"}, status_code=\2)
+        return JSONResponse({"error": "No frame available"}, status_code=400)
 
     results = service.pipeline.process_frame(frame)
     if not results:
-        return JSONResponse({"error": "\1"}, status_code=\2)
+        return JSONResponse({"error": "No face detected"}, status_code=400)
 
     # Use the largest face
     primary = max(
@@ -662,7 +662,7 @@ async def enroll_face(name: str = Query(...)):
         key=lambda r: (r.bbox[2] - r.bbox[0]) * (r.bbox[3] - r.bbox[1]),
     )
     if not primary.embedding:
-        return JSONResponse({"error": "\1"}, status_code=\2)
+        return JSONResponse({"error": "Face embedding extraction failed"}, status_code=500)
 
     embedding = np.array(primary.embedding, dtype=np.float32)
     service.face_db.enroll(name, embedding)
@@ -672,37 +672,37 @@ async def enroll_face(name: str = Query(...)):
 @app.delete("/api/faces/{name}")
 async def delete_face(name: str):
     if not service.face_db:
-        return JSONResponse({"error": "\1"}, status_code=\2)
+        return JSONResponse({"error": "Service not ready"}, status_code=503)
 
     if service.face_db.delete(name):
         return {"status": "deleted", "name": name}
-    return JSONResponse({"error": "\1"}, status_code=\2)
+    return JSONResponse({"error": "Face not found"}, status_code=404)
 
 
 @app.post("/api/faces/enroll-image")
 async def enroll_face_from_image(name: str = Form(...), image: UploadFile = File(...)):
     """Register a face from an uploaded image file."""
     if not service.face_db or not service.pipeline:
-        return JSONResponse({"error": "\1"}, status_code=\2)
+        return JSONResponse({"error": "Service not ready"}, status_code=503)
 
     contents = await image.read()
     if not contents:
-        return JSONResponse({"error": "\1"}, status_code=\2)
+        return JSONResponse({"error": "Empty file"}, status_code=400)
     arr = np.frombuffer(contents, dtype=np.uint8)
     frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if frame is None:
-        return JSONResponse({"error": "\1"}, status_code=\2)
+        return JSONResponse({"error": "Invalid image"}, status_code=400)
 
     results = service.pipeline.process_frame(frame)
     if not results:
-        return JSONResponse({"error": "\1"}, status_code=\2)
+        return JSONResponse({"error": "No face detected in image"}, status_code=400)
 
     primary = max(
         results,
         key=lambda r: (r.bbox[2] - r.bbox[0]) * (r.bbox[3] - r.bbox[1]),
     )
     if not primary.embedding:
-        return JSONResponse({"error": "\1"}, status_code=\2)
+        return JSONResponse({"error": "Face embedding extraction failed"}, status_code=500)
 
     embedding = np.array(primary.embedding, dtype=np.float32)
     service.face_db.enroll(name, embedding)
@@ -716,7 +716,7 @@ async def export_faces():
     import zipfile
 
     if not service.face_db:
-        return JSONResponse({"error": "\1"}, status_code=\2)
+        return JSONResponse({"error": "Service not ready"}, status_code=503)
 
     buf = io.BytesIO()
     data_dir = service.face_db._dir
@@ -740,12 +740,12 @@ async def import_faces(file: UploadFile = File(...)):
     import zipfile
 
     if not service.face_db:
-        return JSONResponse({"error": "\1"}, status_code=\2)
+        return JSONResponse({"error": "Service not ready"}, status_code=503)
 
     contents = await file.read()
     buf = io.BytesIO(contents)
     if not zipfile.is_zipfile(buf):
-        return JSONResponse({"error": "\1"}, status_code=\2)
+        return JSONResponse({"error": "Invalid zip file"}, status_code=400)
 
     data_dir = service.face_db._dir
     buf.seek(0)
