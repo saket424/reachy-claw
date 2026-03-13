@@ -370,7 +370,7 @@ body {
     display: flex;
     flex-direction: column;
     justify-content: flex-start;
-    gap: clamp(20px, 3vh, 40px);
+    gap: clamp(36px, 5vh, 64px);
     overflow: hidden;
     width: 100%;
 }
@@ -378,8 +378,8 @@ body {
 /* Thought card — olive green bg, emoji overflows bottom-right */
 .thought-card {
     background: var(--olive);
-    border-radius: 24px;
-    padding: 20px 28px;
+    border-radius: 20px;
+    padding: 14px 22px;
     position: relative;
     animation: card-in 0.35s ease-out;
     transition: opacity 0.3s, transform 0.3s;
@@ -404,7 +404,7 @@ body {
 }
 
 .thought-text {
-    font-size: clamp(22px, 1.8vw, 28px);
+    font-size: clamp(26px, 2.2vw, 36px);
     font-weight: 600;
     line-height: 1.4;
     color: var(--text-bright);

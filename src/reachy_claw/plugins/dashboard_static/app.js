@@ -38,7 +38,7 @@ let asrActive = false;
 let asrActiveTimer = null;
 
 // Thought bubble history (max 3)
-const MAX_THOUGHTS = 3;
+const MAX_THOUGHTS = 5;
 
 // ── DOM refs ────────────────────────────────────────────────────────
 const videoEl = document.getElementById('video-stream');
@@ -160,10 +160,18 @@ function handleDashboardMsg(msg) {
             break;
 
         case 'asr_final':
-            asrTextEl.innerHTML = msg.text;
-            asrTextEl.className = 'asr-text';
-            triggerAsrActive();
-            resetAsrIdleTimer();
+            if (msg.text) {
+                asrTextEl.innerHTML = msg.text;
+                asrTextEl.className = 'asr-text';
+                triggerAsrActive();
+                resetAsrIdleTimer();
+            } else {
+                // Empty transcript — reset to listening immediately
+                if (asrIdleTimer) clearTimeout(asrIdleTimer);
+                asrTextEl.innerHTML = '<i>Listening...</i>';
+                asrTextEl.className = 'asr-text idle';
+                asrActive = false;
+            }
             break;
 
         case 'observation':
@@ -329,18 +337,26 @@ function updateStreamingCard() {
 
 function finalizeThoughtCard(emotion) {
     const card = thoughtList.querySelector('.thought-card.streaming');
+    const text = currentLlmText.trim();
+
+    // Empty response (e.g. only emotion tags) — remove card
+    if (!text) {
+        if (card) card.remove();
+        return;
+    }
+
     if (!card) {
         // No streaming card, create completed one
         const newCard = document.createElement('div');
         newCard.className = 'thought-card';
         const emoji = emotion ? (EMOTION_EMOJI[emotion] || '') : '';
-        newCard.innerHTML = `<div class="thought-text">${escapeHtml(currentLlmText)}</div>` +
+        newCard.innerHTML = `<div class="thought-text">${escapeHtml(text)}</div>` +
             (emoji ? `<span class="thought-emoji">${emoji}</span>` : '');
         thoughtList.prepend(newCard);
     } else {
         card.classList.remove('streaming');
         const textEl = card.querySelector('.thought-text');
-        textEl.textContent = currentLlmText;
+        textEl.textContent = text;
         const emoji = emotion ? (EMOTION_EMOJI[emotion] || '') : '';
         if (emoji) {
             const emojiEl = document.createElement('span');
@@ -394,6 +410,13 @@ function updateState(state) {
     if (el) {
         el.textContent = state;
         el.dataset.state = state;
+    }
+    // When backend returns to idle/listening, reset ASR display immediately
+    if (state === 'idle' || state === 'listening') {
+        if (asrIdleTimer) clearTimeout(asrIdleTimer);
+        asrTextEl.innerHTML = '<i>Listening...</i>';
+        asrTextEl.className = 'asr-text idle';
+        asrActive = false;
     }
 }
 
