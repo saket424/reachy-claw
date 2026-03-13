@@ -29,11 +29,30 @@ class MotionPlugin(Plugin):
 
     name = "motion"
 
-    # Motor preset definitions: smoothing, deadband, poll_interval, body_smoothing, body_deadband
+    # Motor preset definitions
+    #   smoothing:       EMA factor per step (higher = faster response)
+    #   deadband:        min angle change to send command (degrees)
+    #   poll:            tracking loop interval (seconds)
+    #   body_smoothing:  EMA factor for body rotation
+    #   body_deadband:   min body angle change (degrees)
+    #   max_step:        max degrees per step — caps angular velocity to protect motors
+    #   body_max_step:   max body degrees per step
     MOTOR_PRESETS = {
-        "sensitive": {"smoothing": 0.50, "deadband": 1.0, "poll": 0.03, "body_smoothing": 0.45, "body_deadband": 1.0},
-        "moderate":  {"smoothing": 0.35, "deadband": 2.0, "poll": 0.05, "body_smoothing": 0.35, "body_deadband": 2.0},
-        "smart":     {"smoothing": 0.20, "deadband": 3.0, "poll": 0.07, "body_smoothing": 0.25, "body_deadband": 3.0},
+        "sensitive": {
+            "smoothing": 0.50, "deadband": 1.0, "poll": 0.03,
+            "body_smoothing": 0.45, "body_deadband": 1.0,
+            "max_step": 8.0, "body_max_step": 5.0,
+        },
+        "moderate": {
+            "smoothing": 0.35, "deadband": 2.0, "poll": 0.05,
+            "body_smoothing": 0.35, "body_deadband": 2.0,
+            "max_step": 5.0, "body_max_step": 3.0,
+        },
+        "smart": {
+            "smoothing": 0.15, "deadband": 3.0, "poll": 0.10,
+            "body_smoothing": 0.15, "body_deadband": 4.0,
+            "max_step": 3.0, "body_max_step": 2.0,
+        },
     }
 
     def __init__(self, app):
@@ -48,6 +67,7 @@ class MotionPlugin(Plugin):
         self._current_roll = 0.0
         self._smoothing = app.config.motion_head_tracking_smoothing
         self._min_angle_change = 2.0  # degrees — head deadband
+        self._max_step = 5.0  # max degrees per tracking step (motor protection)
         self._last_applied_yaw = 0.0
         self._last_applied_pitch = 0.0
         self._last_applied_roll = 0.0
@@ -58,6 +78,7 @@ class MotionPlugin(Plugin):
         self._last_applied_body_yaw = 0.0
         self._body_smoothing = 0.35  # body EMA
         self._body_min_angle = 2.0  # degrees — body deadband
+        self._body_max_step = 3.0  # max body degrees per step
 
         # Speech wobble offsets (roll, pitch, yaw) set by HeadWobbler
         self._speech_roll = 0.0
@@ -86,12 +107,14 @@ class MotionPlugin(Plugin):
         self._motor_preset = preset
         self._smoothing = params["smoothing"]
         self._min_angle_change = params["deadband"]
+        self._max_step = params["max_step"]
         self._body_smoothing = params["body_smoothing"]
         self._body_min_angle = params["body_deadband"]
+        self._body_max_step = params["body_max_step"]
         # poll_interval is read each iteration from config, so update config
         self.app.config.motion_head_tracking_poll_interval = params["poll"]
-        logger.info("Motor preset: %s (smoothing=%.2f, deadband=%.1f°, poll=%.3fs)",
-                     preset, params["smoothing"], params["deadband"], params["poll"])
+        logger.info("Motor preset: %s (smoothing=%.2f, deadband=%.1f°, max_step=%.1f°, poll=%.3fs)",
+                     preset, params["smoothing"], params["deadband"], params["max_step"], params["poll"])
 
     def get_motor_state(self) -> dict:
         """Return current motor state for dashboard sync."""
@@ -161,11 +184,20 @@ class MotionPlugin(Plugin):
                 self._current_body_yaw += self._neutral_decay * (0.0 - self._current_body_yaw)
             else:
                 # Head (Stewart platform): pitch + roll mirroring
-                self._current_yaw += self._smoothing * (target.yaw - self._current_yaw)
-                self._current_pitch += self._smoothing * (target.pitch - self._current_pitch)
-                self._current_roll += self._smoothing * (target.roll - self._current_roll)
-                # Body rotation: horizontal person tracking (slower EMA to avoid jitter)
-                self._current_body_yaw += self._body_smoothing * (target.body_yaw - self._current_body_yaw)
+                # EMA step with velocity clamping to protect motors
+                def _clamp_step(current, target_val, smoothing, max_step):
+                    step = smoothing * (target_val - current)
+                    if abs(step) > max_step:
+                        step = max_step if step > 0 else -max_step
+                    return current + step
+
+                self._current_yaw = _clamp_step(self._current_yaw, target.yaw, self._smoothing, self._max_step)
+                self._current_pitch = _clamp_step(self._current_pitch, target.pitch, self._smoothing, self._max_step)
+                self._current_roll = _clamp_step(self._current_roll, target.roll, self._smoothing, self._max_step)
+                # Body rotation: horizontal person tracking
+                self._current_body_yaw = _clamp_step(
+                    self._current_body_yaw, target.body_yaw, self._body_smoothing, self._body_max_step
+                )
 
             # Update head pose if changed enough
             delta_yaw = abs(self._current_yaw - self._last_applied_yaw)
