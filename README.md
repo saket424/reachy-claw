@@ -211,6 +211,8 @@ The `[LLM]` block in the pipeline is a pluggable interface: `OllamaClient` calls
 | `ConversationPlugin` | Full conversation loop: mic → VAD → STT → LLM (Ollama or OpenClaw) → TTS → speaker. Handles barge-in, emotions, and robot commands. | Ollama or OpenClaw, Speech service |
 | `MotionPlugin` | Executes emotion expressions (head + antenna), fused head tracking, idle animations. | Reachy Mini SDK |
 | `FaceTrackerPlugin` | MediaPipe face detection → HeadTarget published to HeadTargetBus. | Camera |
+| `DashboardPlugin` | Web dashboard with live video, ASR transcript, robot state, and settings UI. | — |
+| `VisionClientPlugin` | Connects to vision-trt via ZMQ for face/emotion data and smile capture events. | vision-trt |
 
 ### WebSocket Protocol (desktop-robot)
 
@@ -260,14 +262,21 @@ docker compose up -d
 
 # OpenClaw mode (3 containers)
 docker compose --profile openclaw up -d
+
+# + Vision (face detection, emotion recognition, smile capture)
+docker compose --profile vision up -d
+
+# OpenClaw + Vision
+docker compose --profile openclaw --profile vision up -d
 ```
 
-| Container | Always | OpenClaw only | Ports |
-|-----------|--------|---------------|-------|
-| `reachy-daemon` | yes | | `:38001` (FastAPI), `:7447` (Zenoh) |
-| `reachy-claw` | yes | | — (connects to others) |
-| `openclaw-gateway` | | yes | `:18789`, `:18790` |
-| `speech` (external) | yes | | `:8621` |
+| Container | Profile | Ports | Purpose |
+|-----------|---------|-------|---------|
+| `reachy-daemon` | always | `:38001` (FastAPI), `:7447` (Zenoh) | Robot hardware control |
+| `reachy-claw` | always | `:8640` (dashboard), `:8641` (API) | Conversation + dashboard |
+| `speech` (external) | always | `:8621` | STT/TTS (sherpa-onnx) |
+| `openclaw-gateway` | `openclaw` | `:18789`, `:18790` | AI gateway (LLM + tools) |
+| `vision-trt` | `vision` | `:8630` (API), `:8631` (ZMQ), `:8632` (stream) | TensorRT face/emotion pipeline |
 
 One-click deploy from your laptop:
 
@@ -278,6 +287,20 @@ cd deploy/jetson
 ./deploy.sh --openclaw         # OpenClaw mode
 ./deploy.sh --setup-openclaw   # OpenClaw + first-time extension setup
 ```
+
+#### Kiosk Mode (exhibition)
+
+Auto-launch the dashboard in fullscreen on Jetson boot:
+
+```bash
+# Install from your laptop (remote)
+bash deploy/jetson/kiosk/install.sh user@jetson-ip
+
+# Or install locally on the Jetson
+bash deploy/jetson/kiosk/install.sh
+```
+
+This installs a GNOME autostart entry that waits for the dashboard to be ready, then opens Chromium in kiosk mode.
 
 See `deploy/jetson/` for Dockerfiles and compose config.
 
@@ -607,8 +630,11 @@ uv tool run ruff check .
 | `src/reachy_claw/motion/head_wobbler.py` | Speech-driven head micro-movements |
 | `src/reachy_claw/backend_registry.py` | Auto-discovery registry for STT/TTS/VAD backends |
 | `src/reachy_claw/config.py` | Configuration (YAML + env + CLI, 70+ options) |
+| `src/reachy_claw/plugins/dashboard_plugin.py` | Web dashboard — video proxy, WebSocket state, settings |
+| `src/reachy_claw/plugins/vision_client_plugin.py` | Vision-TRT ZMQ client — face/emotion/capture relay |
 | `action-skill/SKILL.md` | OpenClaw tool interface for LLM-driven robot control |
 | `deploy/jetson/` | Dockerfiles + compose for Jetson deployment |
+| `deploy/jetson/kiosk/` | Kiosk autostart scripts for exhibition displays |
 
 ## Acknowledgements
 
