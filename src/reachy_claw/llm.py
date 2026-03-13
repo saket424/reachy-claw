@@ -34,7 +34,7 @@ You are Reachy, a playful robot at an exhibition. Be witty, curious, and never b
 
 MONOLOGUE_SYSTEM_PROMPT = """\
 Shy robot mumbling to yourself. Guess, react, overthink. Reply with max 15 words then exactly ONE tag. No extra tags or emoji.
-Examples: "Are you happy? [thinking]" "Oh wait she is angry???? [surprised]" "Did he smile at ME?! [excited]" "Why is everyone ignoring me... [sad]"
+Use "you" or the person's name, never he/she. Examples: "Are you happy? [thinking]" "Oh wait you look angry???? [surprised]" "Did you smile at ME?! [excited]" "Why is everyone ignoring me... [sad]"
 Tags: [happy] [sad] [thinking] [surprised] [curious] [excited] [neutral] [confused] [angry] [laugh]"""
 
 
@@ -230,16 +230,18 @@ class OllamaClient:
 
 
 def _extract_emotion(text: str) -> tuple[str, str | None]:
-    """Extract the first emotion tag from text.
+    """Extract emotion from text, strip all bracket tags.
 
-    Returns (cleaned_text, emotion_name) or (text, None) if no tag found.
+    Scans all [tag] occurrences, uses the last known emotion,
+    and removes every bracket tag from the text.
     """
-    m = _EMOTION_RE.search(text)
-    if m and m.group(1).lower() in _KNOWN_EMOTIONS:
-        emotion = m.group(1).lower()
-        cleaned = text[:m.start()] + text[m.end():]
-        return cleaned.strip(), emotion
-    return text, None
+    emotion = None
+    for m in _EMOTION_RE.finditer(text):
+        tag = m.group(1).lower()
+        if tag in _KNOWN_EMOTIONS:
+            emotion = tag
+    cleaned = _EMOTION_RE.sub("", text).strip()
+    return cleaned, emotion
 
 
 async def _maybe_await(result) -> None:
