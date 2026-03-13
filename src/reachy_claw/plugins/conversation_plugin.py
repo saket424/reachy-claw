@@ -305,10 +305,11 @@ class ConversationPlugin(Plugin):
             # a full monologue_interval gap for ASR to process user speech
             if old_state == ConvState.SPEAKING and new_state == ConvState.IDLE:
                 self._last_speech_time = time.monotonic()
-            # Drive antenna animation from state changes
-            emotion = self._STATE_EMOTION_MAP.get(new_state)
-            if emotion:
-                self.app.emotions.queue_emotion(emotion)
+            # Drive antenna animation from state changes (conversation mode only)
+            if not self._monologue_mode:
+                emotion = self._STATE_EMOTION_MAP.get(new_state)
+                if emotion:
+                    self.app.emotions.queue_emotion(emotion)
 
     def _spawn_task(self, coro: Coroutine[Any, Any, Any], *, name: str) -> None:
         """Track background tasks so they can be cancelled on shutdown."""
@@ -401,7 +402,7 @@ class ConversationPlugin(Plugin):
     async def _on_emotion(self, emotion: str) -> None:
         """Server sends an emotion tag — queue it for immediate expression."""
         self.app.events.emit("emotion", {"emotion": emotion})
-        if self.app.config.play_emotions:
+        if self.app.config.play_emotions and not self._monologue_mode:
             logger.info(f"Emotion from server: {emotion}")
             self.app.emotions.queue_emotion(emotion)
 
@@ -755,6 +756,18 @@ class ConversationPlugin(Plugin):
             logger.info("Listening... (speak now)")
 
         while self._running:
+            # Sync streaming_stt with current backend state (handles reconnect/disconnect)
+            stt_available = self._stt.supports_streaming
+            if stt_available and not streaming_stt:
+                streaming_stt = True
+                await asyncio.to_thread(
+                    self._stt.start_stream, self.app.config.sample_rate
+                )
+                logger.info("Upgraded to streaming STT after reconnect")
+            elif not stt_available and streaming_stt:
+                streaming_stt = False
+                logger.info("STT disconnected, falling back to batch mode")
+
             chunk = await self._audio.read_chunk(1024)
             if chunk is None:
                 await asyncio.sleep(0.01)
@@ -1037,7 +1050,7 @@ class ConversationPlugin(Plugin):
         except Exception as e:
             logger.error(f"Error sending to AI: {e}")
             self.app.events.emit("asr_final", {"text": ""})
-            if self.app.config.play_emotions:
+            if self.app.config.play_emotions and not self._monologue_mode:
                 self.app.emotions.queue_emotion("sad")
             self._set_state(ConvState.IDLE)
 
