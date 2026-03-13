@@ -1350,7 +1350,16 @@ class ConversationPlugin(Plugin):
 
                 audio = np.concatenate(all_chunks)
 
+                # Apply software volume gain
+                vol = self.app.config.audio_volume
+                if vol != 1.0:
+                    audio = np.clip(audio * vol, -1.0, 1.0).astype(np.float32)
+
+                # Resample to 16kHz if TTS outputs a different rate
+                audio, sample_rate = _resample_if_needed(audio, sample_rate)
+
                 reachy = self.app.reachy
+
                 # Keep pipeline alive across sentences — only start if not already playing
                 if not self._gst_playing:
                     reachy.media.start_playing()
@@ -1464,8 +1473,6 @@ class ConversationPlugin(Plugin):
                     "-y",
                     "-i",
                     audio_path,
-                    "-ar",
-                    "16000",
                     "-ac",
                     "1",
                     temp_wav_path,
@@ -1477,10 +1484,19 @@ class ConversationPlugin(Plugin):
             import wave
 
             with wave.open(temp_wav_path, "rb") as wf:
+                sample_rate = wf.getframerate()
                 audio_data = np.frombuffer(
                     wf.readframes(wf.getnframes()), dtype=np.int16
                 )
                 audio_float = audio_data.astype(np.float32) / 32768.0
+
+            # Apply software volume gain
+            vol = self.app.config.audio_volume
+            if vol != 1.0:
+                audio_float = np.clip(audio_float * vol, -1.0, 1.0).astype(np.float32)
+
+            # Resample to 16kHz if TTS outputs a different rate
+            audio_float, sample_rate = _resample_if_needed(audio_float, sample_rate)
 
             reachy = self.app.reachy
             reachy.media.start_playing()
@@ -1488,7 +1504,6 @@ class ConversationPlugin(Plugin):
             if self._wobbler:
                 self._wobbler.start()
 
-            sample_rate = 16000
             chunk_size = 1600  # 100ms chunks
             chunk_duration = chunk_size / sample_rate
             interrupted = False
@@ -1681,6 +1696,35 @@ _EMOJI_RE = re.compile(
 
 
 _EMOTION_TAG_RE = re.compile(r"\[(?:emotion:)?\w+\]\s*")
+
+
+_GST_RATE: int = 16000  # SDK pipeline is fixed at 16kHz
+
+
+def _resample_if_needed(audio: np.ndarray, src_rate: int) -> tuple[np.ndarray, int]:
+    """Resample audio to 16kHz if TTS outputs a different rate.
+
+    The SDK's GStreamer pipeline is initialised at 16kHz.  Dynamically changing
+    appsrc caps at runtime breaks playback, so we resample in software instead.
+    """
+    if src_rate == _GST_RATE:
+        return audio, src_rate
+    try:
+        from scipy.signal import resample_poly
+        from math import gcd
+
+        g = gcd(src_rate, _GST_RATE)
+        up, down = _GST_RATE // g, src_rate // g
+        resampled = resample_poly(audio, up, down).astype(np.float32)
+        logger.debug("Resampled %d→%d Hz (%d→%d samples)", src_rate, _GST_RATE, len(audio), len(resampled))
+        return resampled, _GST_RATE
+    except ImportError:
+        # scipy not available — fall back to simple linear interpolation
+        n_out = int(len(audio) * _GST_RATE / src_rate)
+        indices = np.linspace(0, len(audio) - 1, n_out)
+        resampled = np.interp(indices, np.arange(len(audio)), audio).astype(np.float32)
+        logger.debug("Resampled (interp) %d→%d Hz (%d→%d samples)", src_rate, _GST_RATE, len(audio), len(resampled))
+        return resampled, _GST_RATE
 
 
 def _strip_for_tts(text: str) -> str:
