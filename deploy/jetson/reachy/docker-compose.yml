@@ -80,7 +80,7 @@ services:
     network_mode: host
     runtime: nvidia
     devices:
-      - ${CAMERA_DEVICE:-/dev/video1}:${CAMERA_DEVICE:-/dev/video1}
+      - ${CAMERA_DEVICE:-/dev/video0}:${CAMERA_DEVICE:-/dev/video0}
     volumes:
       # Source code (dev mount — remove for production image)
       - ../vision-trt/src:/app/src:ro
@@ -102,7 +102,7 @@ services:
       - LD_LIBRARY_PATH=/host-nvidia-libs:/host-libs:/host-cuda-tgt:/usr/local/cuda/lib64
       - GST_PLUGIN_PATH=/host-gst-plugins
       - GST_V4L2_USE_LIBV4L2=1
-      - CAMERA_DEVICE=${CAMERA_DEVICE:-/dev/video1}
+      - CAMERA_DEVICE=${CAMERA_DEVICE:-/dev/video0}
       - ZMQ_PUB_PORT=8631
       - HTTP_PORT=8630
       - STREAM_PORT=8632

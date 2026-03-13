@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Reachy Dashboard Kiosk
+Comment=Auto-launch Reachy dashboard in fullscreen on login
+Exec=/home/recomputer/reachy-kiosk.sh
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=10
