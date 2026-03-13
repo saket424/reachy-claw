@@ -247,6 +247,10 @@ function handleDashboardMsg(msg) {
             updateMuteUI();
             break;
 
+        case 'history':
+            setHistoryUI(msg.turns || 0);
+            break;
+
         case 'restart_status':
             handleRestartStatus(msg);
             break;
@@ -785,6 +789,9 @@ function initSettings() {
     // Volume control
     initVolume();
 
+    // Memory (history turns)
+    initHistory();
+
     // Motor control
     initMotor();
 
@@ -849,6 +856,30 @@ function sendVolume(vol) {
     }
 }
 
+function initHistory() {
+    const slider = document.getElementById('history-slider');
+    const valueEl = document.getElementById('history-value');
+
+    slider.oninput = () => {
+        valueEl.textContent = slider.value + ' turns';
+    };
+    slider.onchange = () => {
+        const turns = parseInt(slider.value);
+        if (dashboardWs && dashboardWs.readyState === 1) {
+            dashboardWs.send(JSON.stringify({ type: 'set_history', turns }));
+        }
+    };
+
+    if (dashboardWs && dashboardWs.readyState === 1) {
+        dashboardWs.send(JSON.stringify({ type: 'get_history' }));
+    }
+}
+
+function setHistoryUI(turns) {
+    document.getElementById('history-slider').value = turns;
+    document.getElementById('history-value').textContent = turns + ' turns';
+}
+
 function syncModeUI() {
     document.querySelectorAll('.mode-option[data-mode]').forEach(opt => {
         opt.classList.toggle('selected', opt.dataset.mode === currentMode);
@@ -892,7 +923,8 @@ function renderFaceList(faces) {
 
 async function deleteFace(name) {
     try {
-        await fetch(`${VISION_API}/api/faces/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        const res = await fetch(`${VISION_API}/api/faces/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        if (!res.ok) { showToast('Delete failed', true); return; }
         showToast(`Deleted: ${name}`);
         loadFaces();
     } catch (e) {
@@ -909,7 +941,7 @@ async function enrollLive() {
     try {
         const res = await fetch(`${VISION_API}/api/faces/enroll?name=${encodeURIComponent(name)}`, { method: 'POST' });
         const data = await res.json();
-        if (data.error) { showToast(data.error, true); return; }
+        if (!res.ok || data.error) { showToast(data.error || 'Enroll failed', true); return; }
         showToast(`Enrolled: ${name}`);
         document.getElementById('enroll-name').value = '';
         loadFaces();
@@ -949,7 +981,7 @@ async function uploadAndEnroll() {
         try {
             const res = await fetch(`${VISION_API}/api/faces/enroll-image`, { method: 'POST', body: fd });
             const data = await res.json();
-            if (data.error) { fail++; } else { ok++; }
+            if (!res.ok || data.error) { fail++; } else { ok++; }
         } catch (e) {
             fail++;
         }
