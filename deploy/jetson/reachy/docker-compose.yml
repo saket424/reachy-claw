@@ -41,15 +41,13 @@ services:
         max-file: "3"
 
   reachy-claw:
-    image: reachy-claw:v1.10
+    image: reachy-claw:v1.11
     container_name: reachy-claw
     restart: unless-stopped
     network_mode: host
     privileged: true
     volumes:
       - ./reachy-claw.jetson.yaml:/app/reachy-claw.yaml:ro
-      # Source code (dev mount — remove for production image)
-      - ${REACHY_CLAW_SRC:-/home/recomputer/reachy-claw-src/src/reachy_claw}:/app/src/reachy_claw:ro
       - /dev/shm:/dev/shm
       - /run/udev:/run/udev:ro
       - /var/run/docker.sock:/var/run/docker.sock

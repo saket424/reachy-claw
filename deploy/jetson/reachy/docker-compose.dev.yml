@@ -1,0 +1,10 @@
+# Dev override: mount local source code over the image's baked-in code.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+services:
+  reachy-claw:
+    volumes:
+      - ${REACHY_CLAW_SRC:-/home/recomputer/reachy-claw-src/src/reachy_claw}:/app/src/reachy_claw:ro
+
+  vision-trt:
+    volumes:
+      - ../vision-trt/src:/app/src:ro
