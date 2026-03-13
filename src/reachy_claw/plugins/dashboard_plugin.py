@@ -211,8 +211,41 @@ class DashboardPlugin(Plugin):
                     **motion.get_motor_state(),
                 })
 
+        elif msg_type == "get_capture_info":
+            await self._send_capture_info()
+
+    async def _send_capture_info(self) -> None:
+        """Send capture storage info (path + count) to dashboard."""
+        import os
+        data_dir = os.environ.get("DATA_DIR", "~/reachy-data")
+        # Expand ~ for display
+        if data_dir.startswith("~"):
+            data_dir = os.path.expanduser(data_dir)
+        host_path = os.path.join(data_dir, "vision", "captures")
+
+        # Get count from vision-trt API
+        count = 0
+        vision_url = self.app.config.vision_service_url
+        host = vision_url.replace("tcp://", "").split(":")[0]
+        api_url = f"http://{host}:8630/api/captures/count"
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        count = data.get("count", 0)
+        except Exception:
+            pass
+
+        await self._broadcast({
+            "type": "capture_info",
+            "path": host_path,
+            "count": count,
+        })
+
     async def _get_volume(self) -> int:
-        """Read current ALSA volume for Reachy Mini Audio (card 2)."""
+        """Read current ALSA volume for Reachy Mini Audio (card 2), return as UI 0-100."""
         try:
             proc = await asyncio.create_subprocess_exec(
                 "amixer", "-c", "2", "get", "PCM",
@@ -220,28 +253,58 @@ class DashboardPlugin(Plugin):
                 stderr=asyncio.subprocess.DEVNULL,
             )
             stdout, _ = await proc.communicate()
-            # Parse "Playback 48 [80%]" from output
             import re
             m = re.search(r"\[(\d+)%\]", stdout.decode())
-            return int(m.group(1)) if m else 80
+            alsa_vol = int(m.group(1)) if m else 80
+            return self._alsa_to_ui(alsa_vol)
         except Exception:
             return 80
 
-    async def _set_volume(self, percent: int) -> None:
+    @staticmethod
+    def _ui_to_alsa(ui_percent: int) -> int:
+        """Map UI 0-100 to useful ALSA range.
+
+        ALSA 0-40% is inaudible on Reachy Mini Audio, so we map:
+          UI  0   → ALSA 0   (mute)
+          UI  1   → ALSA 40  (minimum audible)
+          UI 100  → ALSA 100 (maximum)
+        Uses a power curve (x^1.5) so the lower half of the slider
+        has finer control over the quiet-to-medium range.
+        """
+        if ui_percent <= 0:
+            return 0
+        # Power curve for perceptual scaling, then map to 40-100 ALSA range
+        t = ui_percent / 100.0
+        curved = t ** 1.5  # spend more slider range in quiet region
+        return int(40 + curved * 60)
+
+    @staticmethod
+    def _alsa_to_ui(alsa_percent: int) -> int:
+        """Reverse map ALSA percentage back to UI 0-100."""
+        if alsa_percent <= 0:
+            return 0
+        if alsa_percent <= 40:
+            return 1
+        t = (alsa_percent - 40) / 60.0
+        # Inverse of x^1.5
+        return max(1, min(100, int((t ** (1 / 1.5)) * 100)))
+
+    async def _set_volume(self, ui_percent: int) -> None:
         """Set ALSA volume for Reachy Mini Audio (card 2)."""
+        alsa_vol = self._ui_to_alsa(ui_percent)
         try:
             await asyncio.create_subprocess_exec(
-                "amixer", "-c", "2", "set", "PCM", f"{percent}%",
+                "amixer", "-c", "2", "set", "PCM", f"{alsa_vol}%",
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
             # Also set PCM,1 (mono channel)
             await asyncio.create_subprocess_exec(
-                "amixer", "-c", "2", "set", "PCM,1", f"{percent}%",
+                "amixer", "-c", "2", "set", "PCM,1", f"{alsa_vol}%",
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            logger.info("Volume set to %d%%", percent)
+            logger.info("Volume set to %d%% (ALSA %d%%)", ui_percent, alsa_vol)
         except Exception as e:
             logger.warning("Failed to set volume: %s", e)
 
