@@ -230,8 +230,13 @@ body {
     flex-direction: column;
     align-items: center;
     justify-content: flex-start;
-    padding-top: calc(clamp(28px, 2.5vw, 40px) + 12px); /* align with video top (header height + padding) */
-    gap: clamp(16px, 2vh, 32px);
+    gap: 16px;
+}
+
+/* Invisible spacer that matches the left column's .section-header height exactly */
+.header-spacer {
+    visibility: hidden;
+    pointer-events: none;
 }
 
 .cell-center-bottom {
