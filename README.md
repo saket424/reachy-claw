@@ -47,8 +47,10 @@ Full voice-to-voice latency depends on LLM inference time (not included above).
 - **Face tracking** — MediaPipe-powered gaze following so the robot looks at whoever is speaking
 - **Streaming TTS** — sentence-level streaming for low-latency responses
 - **Robust barge-in** — 3-layer noise filtering (energy gate + VAD threshold + cooldown) for reliable interrupts even in noisy environments
+- **Monologue mode** — robot mumbles to itself about what it sees; vision-only motor control, no LLM emotion jitter
+- **Runtime config persistence** — dashboard settings (mode, prompts, volume, motor) survive container restarts via `runtime-overrides.yaml`
 - **Pluggable backends** — swap STT/TTS/VAD/LLM without changing code (Paraformer, Matcha, Whisper, ElevenLabs, Ollama, OpenClaw, and more)
-- **Plugin architecture** — Motion, Conversation, and FaceTracker as independent plugins
+- **Plugin architecture** — Motion, Conversation, FaceTracker, Dashboard, and VisionClient as independent plugins
 - **Flexible deployment** — standalone mode, simulator, direct connection, or via Reachy Mini daemon
 
 ## Table of Contents
@@ -155,6 +157,19 @@ uv run reachy-claw \
   --tts matcha \
   --speech-url http://<jetson-ip>:8621
 ```
+
+### Monologue Mode (exhibition)
+
+The robot mumbles to itself about what it sees — no user interaction needed. Great for exhibition demos:
+
+```yaml
+conversation:
+  mode: monologue
+  monologue_interval: 5.0   # seconds between utterances
+  monologue_volume: 0.3     # quieter than conversation mode
+```
+
+In monologue mode, only the vision pipeline (camera emotions) drives motor expressions — LLM emotion tags are ignored to prevent motor jitter.
 
 ### Other modes
 
@@ -372,7 +387,9 @@ In daemon mode, the Reachy Mini connection is managed by the daemon and passed t
 
 Configuration is layered (highest priority wins):
 
-**CLI args > Environment variables > YAML config file > Defaults**
+**CLI args > Environment variables > Runtime overrides > YAML config file > Defaults**
+
+Runtime overrides (`runtime-overrides.yaml`) are saved automatically when you change settings via the dashboard UI. They persist across container restarts when `DATA_DIR` is mounted as a Docker volume.
 
 ### YAML config file
 
