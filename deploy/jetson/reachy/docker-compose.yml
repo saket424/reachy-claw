@@ -41,7 +41,7 @@ services:
         max-file: "3"
 
   reachy-claw:
-    image: reachy-claw:v1.13
+    image: sensecraft-missionpack.seeed.cn/solution/reachy-claw:v1.13
     container_name: reachy-claw
     restart: unless-stopped
     network_mode: host
@@ -74,7 +74,7 @@ services:
 
   vision-trt:
     profiles: ["vision"]
-    image: vision-trt:v2.0-gst
+    image: sensecraft-missionpack.seeed.cn/solution/vision-trt:v2.1
     container_name: vision-trt
     restart: unless-stopped
     network_mode: host
@@ -82,9 +82,6 @@ services:
     devices:
       - ${CAMERA_DEVICE:-/dev/video0}:${CAMERA_DEVICE:-/dev/video0}
     volumes:
-      # Source code (dev mount — remove for production image)
-      - ../vision-trt/src:/app/src:ro
-      - ../vision-trt/models:/app/models:ro
       # Persistent TRT engine cache (avoid rebuild on restart)
       - vision-trt-engines:/app/engines
       # Persistent data (captures, face DB) — bind mount to host for easy access
