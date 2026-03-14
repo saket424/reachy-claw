@@ -67,6 +67,7 @@ class OllamaClient:
         self._history: list[dict[str, str]] = []
         self._connected = False
         self._current_task: asyncio.Task | None = None
+        self._run_counter = 0
 
         self.callbacks = StreamCallbacks()
 
@@ -139,7 +140,8 @@ class OllamaClient:
 
     async def _stream_chat(self, user_text: str) -> None:
         """Call Ollama /api/chat with streaming and fire callbacks."""
-        run_id = f"ollama-{id(self)}"
+        self._run_counter += 1
+        run_id = f"ollama-{self._run_counter}"
 
         # Build messages — inject current time into system prompt
         from datetime import datetime
