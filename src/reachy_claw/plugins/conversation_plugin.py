@@ -477,18 +477,53 @@ class ConversationPlugin(Plugin):
 
     def _capture_frame_b64(self) -> str | None:
         """Capture camera frame, return base64 JPEG. Called from worker thread."""
-        reachy = self.app.reachy
-        if not reachy or not hasattr(reachy, "media") or reachy.media is None:
-            return None
-        frame = reachy.media.get_frame()
-        if frame is None:
-            return None
         import base64
 
-        import cv2
+        # Try SDK camera first (works on macOS dev)
+        reachy = self.app.reachy
+        if reachy and hasattr(reachy, "media") and reachy.media is not None:
+            frame = reachy.media.get_frame()
+            if frame is not None:
+                import cv2
 
-        _, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        return base64.b64encode(jpg.tobytes()).decode()
+                _, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                return base64.b64encode(jpg.tobytes()).decode()
+
+        # Fallback: grab a JPEG from vision service MJPEG stream (Jetson)
+        return self._capture_from_vision_stream()
+
+    def _capture_from_vision_stream(self) -> str | None:
+        """Grab a single JPEG frame from the vision-trt MJPEG stream."""
+        import base64
+
+        vision_url = self.app.config.vision_service_url  # tcp://127.0.0.1:8631
+        if not vision_url:
+            return None
+        host = vision_url.replace("tcp://", "").split(":")[0]
+        stream_url = f"http://{host}:8630/stream"
+
+        import urllib.request
+
+        try:
+            req = urllib.request.Request(stream_url)
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                buf = b""
+                jpeg_start = -1
+                while len(buf) < 500_000:
+                    chunk = resp.read(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    if jpeg_start < 0:
+                        jpeg_start = buf.find(b"\xff\xd8")
+                    if jpeg_start >= 0:
+                        jpeg_end = buf.find(b"\xff\xd9", jpeg_start + 2)
+                        if jpeg_end >= 0:
+                            jpg_data = buf[jpeg_start : jpeg_end + 2]
+                            return base64.b64encode(jpg_data).decode()
+        except Exception as e:
+            logger.warning("Vision stream capture failed: %s", e)
+        return None
 
     def switch_mode(self, mode: str) -> None:
         """Hot-switch between conversation and monologue modes."""
