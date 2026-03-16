@@ -304,6 +304,8 @@ class DashboardPlugin(Plugin):
             conv = self.app.get_plugin("conversation")
             if conv and hasattr(conv, "_client") and hasattr(conv._client, "_config"):
                 conv._client._config.enable_vlm = enabled
+                # Clear history so stale non-VLM replies don't pollute context
+                conv._client._history.clear()
             self._save_overrides(["enable_vlm"])
             await self._broadcast({"type": "vlm_state", "enabled": enabled})
 

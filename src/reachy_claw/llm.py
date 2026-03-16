@@ -202,8 +202,17 @@ class OllamaClient:
                     assistant_msg["tool_calls"] = tool_calls
                 messages.append(assistant_msg)
 
+                import time as _time
                 for tc in tool_calls:
+                    t0 = _time.monotonic()
                     result = await self._execute_tool(tc)
+                    elapsed = _time.monotonic() - t0
+                    logger.info(
+                        "Tool %s executed in %.1fs (%d chars)",
+                        tc.get("function", {}).get("name", "?"),
+                        elapsed,
+                        len(result),
+                    )
                     messages.append({
                         "role": "tool",
                         "content": result,
