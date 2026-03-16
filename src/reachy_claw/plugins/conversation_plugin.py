@@ -1204,7 +1204,7 @@ class ConversationPlugin(Plugin):
             # Inject face recognition context into conversation
             ctx = self._get_vision_context()
             if ctx:
-                text = f"[You see: {ctx}]\n{text}"
+                text = f"[Faces: {ctx}]\n{text}"
         logger.info("Sending to AI...")
         self._set_state(ConvState.THINKING)
         self._t_send = time.perf_counter()

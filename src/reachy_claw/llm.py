@@ -31,7 +31,7 @@ _KNOWN_EMOTIONS = frozenset({
 
 DEFAULT_SYSTEM_PROMPT = """\
 Your name is Reachy. You are a cute robot at an exhibition. Always reply in English. Keep replies concise but natural. No emoji.
-Names in [You see: ...] are people you see, not your name.
+Names in [Faces: ...] are people you see, not your name.
 You MUST end with one of: [happy] [sad] [thinking] [surprised] [curious]
 Example: "Hey there, welcome to the exhibition! [happy]\""""
 
@@ -55,7 +55,7 @@ _DESCRIBE_SCENE_TOOL = {
 
 _VLM_SYSTEM_PROMPT = """\
 Your name is Reachy. You are a cute robot at an exhibition. Always reply in English. Keep replies concise but natural. No emoji.
-You have a camera. Names in [You see: ...] are people you see, not your name.
+You have a camera. Names in [Faces: ...] are people you see, not your name.
 You MUST end with one of: [happy] [sad] [thinking] [surprised] [curious]
 Example: "Wow, a person sitting with a laptop, nice setup! [curious]\""""
 
@@ -67,11 +67,11 @@ _VISION_KEYWORDS = re.compile(
     r"|你能看|帮我看|瞧瞧|望望"
     # English — broad patterns for ASR output
     r"|what do you see|what.?s in front|what.?s around"
-    r"|look at|can you see|do you see|you see"
-    r"|describe.*(scene|around|room|here)|show me"
-    r"|in front of you|around you|looking at"
+    r"|can you see|do you see|what you see"
+    r"|describe.*(scene|around|room|here)"
+    r"|in front of you|around you"
     r"|what is this|what are these|what.?s that"
-    r"|see any|see some|take a look",
+    r"|take a look",
     re.IGNORECASE,
 )
 
@@ -208,8 +208,10 @@ class OllamaClient:
         try:
             # Keyword-based forced VLM: skip first LLM call entirely,
             # go straight to frame capture → VLM → single LLM call with result.
+            # Only check the raw user speech, not injected context like [Faces: ...].
+            raw_speech = user_text.split("\n", 1)[-1] if "\n" in user_text else user_text
             force_vision = (
-                vlm_active and bool(_VISION_KEYWORDS.search(user_text))
+                vlm_active and bool(_VISION_KEYWORDS.search(raw_speech))
             )
 
             if force_vision:
