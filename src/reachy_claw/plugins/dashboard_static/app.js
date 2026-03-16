@@ -26,6 +26,7 @@ const EMOTION_EMOJI = {
 let visionWs = null;
 let dashboardWs = null;
 let latestFaces = null;      // from vision WS
+let latestFacesTs = 0;       // Date.now() of last vision WS update
 let latestVisionFaces = [];  // from dashboard WS (vision_faces event)
 let currentLlmText = '';
 let currentRunId = null;
@@ -96,6 +97,7 @@ function connectVision() {
         try {
             const data = JSON.parse(e.data);
             latestFaces = data.faces || [];
+            latestFacesTs = Date.now();
             updateEmotionDisplay();
         } catch(err) {
             console.error('Vision WS parse error:', err);
@@ -497,6 +499,11 @@ function updateRobotState(msg) {
 function drawFaceCrop() {
     const vp = document.querySelector('.face-viewport');
 
+    // Expire stale face data after 2s without updates
+    if (latestFaces && latestFacesTs && Date.now() - latestFacesTs > 2000) {
+        latestFaces = null;
+    }
+
     if (!latestFaces || latestFaces.length === 0 || videoEl.style.display === 'none') {
         faceCropCtx.clearRect(0, 0, faceCropCanvas.width, faceCropCanvas.height);
         vp.classList.remove('has-face');
@@ -531,12 +538,14 @@ function drawFaceCrop() {
     sw = Math.min(natW - sx, sw + padW * 2);
     sh = Math.min(natH - sy, sh + padH * 2);
 
-    // Draw cropped face
+    // Draw cropped face — clear first so failures never show stale content
     faceCropCtx.clearRect(0, 0, faceCropCanvas.width, faceCropCanvas.height);
     try {
-        faceCropCtx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, faceCropCanvas.width, faceCropCanvas.height);
+        if (videoEl.complete && videoEl.naturalWidth > 0) {
+            faceCropCtx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, faceCropCanvas.width, faceCropCanvas.height);
+        }
     } catch(e) {
-        // Image not loaded yet
+        // drawImage failed — canvas already cleared
     }
 
     requestAnimationFrame(drawFaceCrop);
