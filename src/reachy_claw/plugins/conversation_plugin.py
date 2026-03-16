@@ -506,8 +506,7 @@ class ConversationPlugin(Plugin):
                     self.app.config.ollama_monologue_prompt or MONOLOGUE_SYSTEM_PROMPT
                 )
                 self._client._config.skip_emotion_extraction = False
-                # Monologue needs history so the model doesn't repeat itself
-                self._client._config.max_history = max(self._client._config.max_history, 5)
+                # Monologue respects dashboard history setting as-is
                 self._client._config.temperature = max(self._client._config.temperature, 0.9)
             else:
                 self._client._config.system_prompt = (
