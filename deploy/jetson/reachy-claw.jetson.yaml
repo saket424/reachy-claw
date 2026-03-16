@@ -12,17 +12,20 @@ tts:
   backend: matcha
   speech_service_url: http://localhost:8621
   matcha:
-    speaker_id: 0
-    speed: 1.2
+    speaker_id: 3       # af_heart
+    speed: 0.8
+    pitch_shift: 1.5    # +1.5 semitones
 
 vad:
   backend: silero
 
 barge_in:
-  confirm_frames: 10
+  enabled: true
+  # Tuned for Reachy Mini speaker + close-range mic
+  confirm_frames: 2
   energy_threshold: 0.03
-  silero_threshold: 0.6
-  cooldown_ms: 800
+  silero_threshold: 0.5
+  cooldown_ms: 300
 
 audio:
   device: "Reachy Mini Audio"

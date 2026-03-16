@@ -180,16 +180,19 @@ class KokoroTTS(TTSBackend):
     class Settings:
         speaker_id: int = 0
         speed: float = 1.0
+        pitch_shift: float = 0.0
 
     def __init__(
         self,
         base_url: str = "http://localhost:8000",
         speaker_id: int = 0,
         speed: float = 1.0,
+        pitch_shift: float = 0.0,
     ):
         self._base_url = base_url.rstrip("/")
         self._speaker_id = speaker_id
         self._speed = speed
+        self._pitch_shift = pitch_shift
         self._check_streaming_support()
 
     def _check_streaming_support(self) -> None:
@@ -228,6 +231,7 @@ class KokoroTTS(TTSBackend):
             "text": text,
             "sid": self._speaker_id,
             "speed": self._speed,
+            "pitch": self._pitch_shift or None,
         }).encode()
 
         req = urllib.request.Request(
@@ -268,6 +272,7 @@ class KokoroTTS(TTSBackend):
             "text": text,
             "sid": self._speaker_id,
             "speed": self._speed,
+            "pitch": self._pitch_shift or None,
         }).encode()
 
         req = urllib.request.Request(
