@@ -575,6 +575,7 @@ class ConversationPlugin(Plugin):
                     self.app.config.ollama_monologue_prompt or MONOLOGUE_SYSTEM_PROMPT
                 )
                 self._client._config.skip_emotion_extraction = False
+                self._client._config.monologue_mode = True
                 # Monologue respects dashboard history setting as-is
                 self._client._config.temperature = max(self._client._config.temperature, 0.9)
             else:
@@ -582,6 +583,7 @@ class ConversationPlugin(Plugin):
                     self.app.config.ollama_system_prompt or DEFAULT_SYSTEM_PROMPT
                 )
                 self._client._config.skip_emotion_extraction = False
+                self._client._config.monologue_mode = False
             # Reset history on mode switch
             self._client._history.clear()
 

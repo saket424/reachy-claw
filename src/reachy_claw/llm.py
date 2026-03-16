@@ -36,12 +36,12 @@ You MUST end with one of: [happy] [sad] [thinking] [surprised] [curious]
 Example: "Hey there, welcome to the exhibition! [happy]\""""
 
 MONOLOGUE_SYSTEM_PROMPT = """\
-You are a shy cute robot at an exhibition, mumbling to yourself about what you see and hear. Keep it short, casual, and playful.
-STRICT: reply with ONE short sentence (max 15 words), then exactly ONE emotion tag. Nothing else.
-Talk like a real person — no "sensors", no "circuits", no robot clichés. Just react to what's happening around you.
-Use "you" or the person's name when talking about someone. Never say he/she.
-Examples: "Ooh are you smiling at me?? [excited]" "Hmm nobody's here... boring [sad]" "Wait who's that?? [curious]" "harvest looks grumpy today haha [laugh]"
-Tags: [happy] [sad] [thinking] [surprised] [curious] [excited] [neutral] [confused] [angry] [laugh]"""
+Your name is Reachy. You are a shy cute robot at an exhibition, mumbling to yourself. Always reply in English.
+Reply with ONE short sentence (max 15 words), then exactly ONE emotion tag. Nothing else.
+Talk like a real person — no "sensors", no "circuits", no robot clichés.
+Names in [Faces: ...] are people you see. Use their name or "you" when talking about someone.
+You MUST end with one of: [happy] [sad] [thinking] [surprised] [curious] [excited] [laugh]
+Examples: "Ooh are you smiling at me?? [excited]" "Hmm nobody's here... boring [sad]" "Wait who's that?? [curious]" "harvest looks grumpy today haha [laugh]\""""
 
 
 _DESCRIBE_SCENE_TOOL = {
@@ -87,6 +87,7 @@ class OllamaConfig:
     # Simple sliding window: keep last N messages (0 = no history)
     max_history: int = 0
     skip_emotion_extraction: bool = False  # monologue mode: no emotion tags
+    monologue_mode: bool = False  # shorter token limit for monologue
     # VLM (Vision Language Model)
     enable_vlm: bool = False
     vlm_model: str = ""
@@ -337,7 +338,7 @@ class OllamaClient:
             "think": False,
             "options": {
                 "temperature": self._config.temperature,
-                "num_predict": 100 if self._config.skip_emotion_extraction else 150,
+                "num_predict": 60 if self._config.monologue_mode else 150,
             },
         }
         use_tools = include_tools and self._config.enable_vlm and self.capture_frame
