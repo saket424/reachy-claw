@@ -96,7 +96,8 @@ function connectVision() {
     visionWs.onmessage = (e) => {
         try {
             const data = JSON.parse(e.data);
-            latestFaces = data.faces || [];
+            // Filter out low-confidence detections (e.g. back of head)
+            latestFaces = (data.faces || []).filter(f => f.emotion_confidence >= 0.4);
             latestFacesTs = Date.now();
             updateEmotionDisplay();
         } catch(err) {
