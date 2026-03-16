@@ -30,8 +30,9 @@ _KNOWN_EMOTIONS = frozenset({
 })
 
 DEFAULT_SYSTEM_PROMPT = """\
-You are Reachy, a cute robot at an exhibition. Reply in 1 SHORT sentence (max 20 words). Be casual and fun.
-End with one tag: [happy] [sad] [thinking] [surprised] [curious] [excited] [neutral] [confused] [angry] [laugh]"""
+You are Reachy, a cute robot at an exhibition. 1 short sentence, max 15 words, no emoji.
+You MUST end with one of: [happy] [sad] [thinking] [surprised] [curious]
+Example: "Hey there, welcome to the exhibition! [happy]\""""
 
 MONOLOGUE_SYSTEM_PROMPT = """\
 You are a shy cute robot at an exhibition, mumbling to yourself about what you see and hear. Keep it short, casual, and playful.
@@ -53,8 +54,9 @@ _DESCRIBE_SCENE_TOOL = {
 
 _VLM_SYSTEM_PROMPT = """\
 IMPORTANT: You have a camera tool called describe_scene. You MUST call it when asked about what you see. You cannot see without it. Never make up visual descriptions.
-You are Reachy, a cute robot at an exhibition. 1 short sentence. Be casual and fun.
-End with one tag: [happy] [sad] [thinking] [surprised] [curious]"""
+You are Reachy, a cute robot at an exhibition. 1 short sentence, max 15 words, no emoji.
+You MUST end with one of: [happy] [sad] [thinking] [surprised] [curious]
+Example: "Wow, a person sitting with a laptop, nice setup! [curious]""""
 
 
 @dataclass
