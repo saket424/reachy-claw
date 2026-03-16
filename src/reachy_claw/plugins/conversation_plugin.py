@@ -813,6 +813,7 @@ class ConversationPlugin(Plugin):
         speech_frames: list[np.ndarray] = []
         silence_count = 0
         barge_in_count = 0
+        barge_in_chunks: list[np.ndarray] = []  # audio from barge-in detection
         max_silence = int(self.app.config.silence_duration * self.app.config.sample_rate / 1024)
         max_frames = int(self.app.config.max_recording_duration * self.app.config.sample_rate / 1024)
         confirm_frames = self.app.config.barge_in_confirm_frames
@@ -877,6 +878,8 @@ class ConversationPlugin(Plugin):
                     # Decay instead of hard reset — one quiet frame shouldn't
                     # erase progress when speech is intermittent with echo.
                     barge_in_count = max(0, barge_in_count - 1)
+                    if barge_in_count == 0:
+                        barge_in_chunks.clear()
                     continue
 
                 # Layer 3: Stricter Silero threshold during playback
@@ -886,24 +889,31 @@ class ConversationPlugin(Plugin):
                     )
                     if prob < self.app.config.barge_in_silero_threshold:
                         barge_in_count = max(0, barge_in_count - 1)
+                        if barge_in_count == 0:
+                            barge_in_chunks.clear()
                         continue
 
                 # All layers passed — count toward confirmation
                 barge_in_count += 1
+                barge_in_chunks.append(chunk)
                 if barge_in_count >= confirm_frames:
                     logger.info(f"Barge-in confirmed ({barge_in_count} frames)")
-                    speech_frames = [chunk]
+                    speech_frames = list(barge_in_chunks)
                     await self._fire_interrupt()
                     self._set_state(ConvState.LISTENING)
                     if streaming_stt:
-                        # Reset STT in one thread call to minimize blocking
+                        # Restart STT and replay all speech chunks that
+                        # triggered the barge-in so they're not lost.
+                        replay = list(barge_in_chunks)
                         def _restart_stt():
                             self._stt.cancel_stream()
                             self._stt.start_stream(self.app.config.sample_rate)
-                            self._stt.feed_chunk(chunk)
+                            for c in replay:
+                                self._stt.feed_chunk(c)
                         await asyncio.to_thread(_restart_stt)
                     silence_count = 0
                     barge_in_count = 0
+                    barge_in_chunks.clear()
                 continue
 
             # ── TRANSCRIBING / THINKING states ──
@@ -937,8 +947,8 @@ class ConversationPlugin(Plugin):
                     barge_in_count = 0
                     if self._vad:
                         self._vad.reset()
-                    # Reset STT state so stale _final_text doesn't pollute next utterance
-                    self._stt.cancel_stream()
+                    # Reset STT and eagerly reconnect so next speech isn't lost
+                    await asyncio.to_thread(self._restart_stt_stream)
                     self._spawn_task(
                         self._process_and_send(text),
                         name="conversation.process_and_send",
@@ -959,8 +969,8 @@ class ConversationPlugin(Plugin):
                     barge_in_count = 0
                     if self._vad:
                         self._vad.reset()
-                    # Reset STT state so stale _final_text doesn't pollute next utterance
-                    self._stt.cancel_stream()
+                    # Reset STT and eagerly reconnect so next speech isn't lost
+                    await asyncio.to_thread(self._restart_stt_stream)
                     self._spawn_task(
                         self._process_and_send(text),
                         name="conversation.process_and_send",
@@ -972,8 +982,12 @@ class ConversationPlugin(Plugin):
                     self._set_state(ConvState.TRANSCRIBING)
 
                     if streaming_stt:
-                        # Get whatever text STT has accumulated
-                        text = await asyncio.to_thread(self._stt.finish_stream)
+                        # Get final text and eagerly reconnect STT
+                        def _finish_and_restart():
+                            text = self._stt.finish_stream()
+                            self._stt.start_stream(self.app.config.sample_rate)
+                            return text
+                        text = await asyncio.to_thread(_finish_and_restart)
                         speech_frames = []
                         silence_count = 0
                         barge_in_count = 0
@@ -997,6 +1011,15 @@ class ConversationPlugin(Plugin):
                             self._transcribe_and_send(audio_data),
                             name="conversation.transcribe_and_send",
                         )
+
+    def _restart_stt_stream(self) -> None:
+        """Cancel current STT stream and open a fresh connection immediately.
+
+        Called from worker thread. Eagerly reconnects so that the next
+        feed_chunk doesn't pay WS connection latency.
+        """
+        self._stt.cancel_stream()
+        self._stt.start_stream(self.app.config.sample_rate)
 
     async def _bg_listen(self, chunk: np.ndarray, streaming_stt: bool) -> None:
         """Background listening during SPEAKING/THINKING in monologue mode.
