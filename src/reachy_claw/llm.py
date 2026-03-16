@@ -1,6 +1,6 @@
 """Lightweight Ollama LLM client with streaming and emotion parsing.
 
-Designed for tiny models (0.8b-2b) — no tool calling, just text + emotion tags.
+Supports optional tool calling (describe_scene) for VLM vision queries.
 Uses httpx (already a project dependency) to call Ollama's /api/chat endpoint.
 """
 
@@ -11,6 +11,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from typing import Callable
 
 import httpx
 
@@ -41,6 +42,18 @@ Examples: "Ooh are you smiling at me?? [excited]" "Hmm nobody's here... boring [
 Tags: [happy] [sad] [thinking] [surprised] [curious] [excited] [neutral] [confused] [angry] [laugh]"""
 
 
+_DESCRIBE_SCENE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "describe_scene",
+        "description": "Look through the camera to see what is in front of you. You MUST call this tool whenever the user asks what you see, what is around you, or anything about the visual scene. You cannot see without this tool.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+
+_VLM_SYSTEM_SUFFIX = "\nYou cannot see without calling describe_scene. Never make up visual descriptions."
+
+
 @dataclass
 class OllamaConfig:
     """Ollama-specific configuration."""
@@ -52,6 +65,10 @@ class OllamaConfig:
     # Simple sliding window: keep last N messages (0 = no history)
     max_history: int = 0
     skip_emotion_extraction: bool = False  # monologue mode: no emotion tags
+    # VLM (Vision Language Model)
+    enable_vlm: bool = False
+    vlm_model: str = ""
+    vlm_prompt: str = "Describe what you see in this image briefly."
 
 
 class OllamaClient:
@@ -68,6 +85,7 @@ class OllamaClient:
         self._connected = False
         self._current_task: asyncio.Task | None = None
         self._run_counter = 0
+        self.capture_frame: Callable[[], str | None] | None = None  # returns base64 JPEG
 
         self.callbacks = StreamCallbacks()
 
@@ -139,7 +157,7 @@ class OllamaClient:
     # ── Internal ──────────────────────────────────────────────────────
 
     async def _stream_chat(self, user_text: str) -> None:
-        """Call Ollama /api/chat with streaming and fire callbacks."""
+        """Call Ollama /api/chat with streaming and optional tool-call loop."""
         self._run_counter += 1
         run_id = f"ollama-{self._run_counter}"
 
@@ -147,6 +165,8 @@ class OllamaClient:
         from datetime import datetime
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         system = f"Current time: {now}\n{self._config.system_prompt}"
+        if self._config.enable_vlm and self.capture_frame:
+            system += _VLM_SYSTEM_SUFFIX
         messages = [{"role": "system", "content": system}]
         if self._config.max_history > 0:
             messages.extend(self._history[-(self._config.max_history * 2):])
@@ -156,49 +176,43 @@ class OllamaClient:
         if self.callbacks.on_stream_start:
             await _maybe_await(self.callbacks.on_stream_start(run_id))
 
-        full_text = ""
-
         try:
-            async with self._http.stream(
-                "POST",
-                "/api/chat",
-                json={
-                    "model": self._config.model,
-                    "messages": messages,
-                    "stream": True,
-                    "think": False,
-                    "options": {
-                        "temperature": self._config.temperature,
-                        "num_predict": 100 if self._config.skip_emotion_extraction else 200,
-                    },
-                },
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line.strip():
-                        continue
-                    try:
-                        chunk = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
+            # First LLM call
+            full_text, tool_calls = await self._stream_response(messages, run_id)
 
-                    token = chunk.get("message", {}).get("content", "")
-                    if not token:
-                        if chunk.get("done"):
-                            break
-                        continue
-
-                    full_text += token
-
-                    # Stream tokens immediately, stripping any emotion tags
-                    clean_token = token if self._config.skip_emotion_extraction else _EMOTION_RE.sub("", token)
-                    if clean_token and self.callbacks.on_stream_delta:
-                        await _maybe_await(
-                            self.callbacks.on_stream_delta(clean_token, run_id)
+            # Tool-call loop (single round)
+            if tool_calls and self._config.enable_vlm:
+                # End first stream so TTS plays the preamble (e.g. "让我看看")
+                if full_text.strip() and self.callbacks.on_stream_end:
+                    await _maybe_await(
+                        self.callbacks.on_stream_end(
+                            _EMOTION_RE.sub("", full_text).strip(), run_id
                         )
+                    )
+
+                # Execute tools and append results
+                assistant_msg = {"role": "assistant", "content": full_text}
+                if tool_calls:
+                    assistant_msg["tool_calls"] = tool_calls
+                messages.append(assistant_msg)
+
+                for tc in tool_calls:
+                    result = await self._execute_tool(tc)
+                    messages.append({
+                        "role": "tool",
+                        "content": result,
+                    })
+
+                # Second LLM call (no tools, to produce final response)
+                self._run_counter += 1
+                run_id = f"ollama-{self._run_counter}"
+                if self.callbacks.on_stream_start:
+                    await _maybe_await(self.callbacks.on_stream_start(run_id))
+                full_text, _ = await self._stream_response(
+                    messages, run_id, include_tools=False
+                )
 
         except asyncio.CancelledError:
-            # Barge-in interrupt
             if self.callbacks.on_stream_abort:
                 await _maybe_await(
                     self.callbacks.on_stream_abort("interrupted", run_id)
@@ -225,7 +239,6 @@ class OllamaClient:
         if self._config.max_history > 0:
             self._history.append({"role": "user", "content": user_text})
             self._history.append({"role": "assistant", "content": clean_full})
-            # Trim to max_history turns
             max_msgs = self._config.max_history * 2
             if len(self._history) > max_msgs:
                 self._history = self._history[-max_msgs:]
@@ -235,6 +248,95 @@ class OllamaClient:
             await _maybe_await(
                 self.callbacks.on_stream_end(clean_full, run_id)
             )
+
+    async def _stream_response(
+        self,
+        messages: list[dict],
+        run_id: str,
+        include_tools: bool = True,
+    ) -> tuple[str, list[dict]]:
+        """Stream a single Ollama /api/chat call, return (full_text, tool_calls)."""
+        payload: dict = {
+            "model": self._config.model,
+            "messages": messages,
+            "stream": True,
+            "think": False,
+            "options": {
+                "temperature": self._config.temperature,
+                "num_predict": 100 if self._config.skip_emotion_extraction else 200,
+            },
+        }
+        if include_tools and self._config.enable_vlm and self.capture_frame:
+            payload["tools"] = [_DESCRIBE_SCENE_TOOL]
+
+        full_text = ""
+        tool_calls: list[dict] = []
+
+        async with self._http.stream("POST", "/api/chat", json=payload) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.strip():
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                msg = chunk.get("message", {})
+
+                # Collect tool calls
+                chunk_tool_calls = msg.get("tool_calls")
+                if chunk_tool_calls:
+                    tool_calls.extend(chunk_tool_calls)
+
+                token = msg.get("content", "")
+                if not token:
+                    if chunk.get("done"):
+                        break
+                    continue
+
+                full_text += token
+
+                # Stream tokens immediately, stripping any emotion tags
+                clean_token = (
+                    token
+                    if self._config.skip_emotion_extraction
+                    else _EMOTION_RE.sub("", token)
+                )
+                if clean_token and self.callbacks.on_stream_delta:
+                    await _maybe_await(
+                        self.callbacks.on_stream_delta(clean_token, run_id)
+                    )
+
+        return full_text, tool_calls
+
+    async def _execute_tool(self, tool_call: dict) -> str:
+        """Execute a tool call and return the result string."""
+        func = tool_call.get("function", {})
+        name = func.get("name", "")
+        if name != "describe_scene" or not self.capture_frame:
+            return "Tool not available"
+        b64 = await asyncio.to_thread(self.capture_frame)
+        if not b64:
+            return "Camera not available"
+        vlm_model = self._config.vlm_model or self._config.model
+        resp = await self._http.post(
+            "/api/chat",
+            json={
+                "model": vlm_model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": self._config.vlm_prompt,
+                        "images": [b64],
+                    }
+                ],
+                "stream": False,
+                "think": False,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()["message"]["content"]
 
 
 def _extract_emotion(text: str) -> tuple[str, str | None]:

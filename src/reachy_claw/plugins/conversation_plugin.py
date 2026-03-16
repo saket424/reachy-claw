@@ -81,6 +81,7 @@ class ConversationPlugin(Plugin):
         self._gst_playing = False  # GStreamer playback pipeline state
 
         self._current_run_id: str | None = None
+        self._event_loop: asyncio.AbstractEventLoop | None = None
         self._conversation_active = False
         self._conversation_stopped = False  # STOPPED: still listen+send, but no TTS
         self._state = ConvState.IDLE
@@ -102,6 +103,7 @@ class ConversationPlugin(Plugin):
         return True
 
     async def start(self):
+        self._event_loop = asyncio.get_running_loop()
         config = self.app.config
 
         # ── Phase 1: create backends (fast, no I/O) ──────────────────
@@ -165,8 +167,12 @@ class ConversationPlugin(Plugin):
                     system_prompt=system_prompt,
                     temperature=temperature,
                     max_history=history,
+                    enable_vlm=config.enable_vlm,
+                    vlm_model=config.vlm_model,
+                    vlm_prompt=config.vlm_prompt,
                 )
                 self._client = OllamaClient(ollama_cfg)
+                self._client.capture_frame = self._capture_frame_b64
                 await self._client.connect()
                 self._setup_callbacks()
                 if config.gateway_warmup:
@@ -235,8 +241,19 @@ class ConversationPlugin(Plugin):
         if self._monologue_mode:
             tasks.append(self._monologue_timer())
 
+        async def _guarded(coro, name: str):
+            try:
+                await coro
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Pipeline task '%s' crashed — stopping plugin", name)
+                self._running = False
+
+        guarded = [_guarded(t, t.__name__ if hasattr(t, '__name__') else str(i))
+                   for i, t in enumerate(tasks)]
         try:
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*guarded)
         except asyncio.CancelledError:
             logger.info("Conversation pipeline cancelled")
 
@@ -369,6 +386,9 @@ class ConversationPlugin(Plugin):
         self.app.events.emit("llm_delta", {"text": text, "run_id": run_id})
 
     async def _on_stream_end(self, full_text: str, run_id: str) -> None:
+        if run_id != self._current_run_id:
+            logger.debug(f"Ignoring stale stream_end (run {run_id[:8]})")
+            return
         if hasattr(self, "_t_send") and self._t_send:
             total = (time.perf_counter() - self._t_send) * 1000
             logger.info(f"Response complete ({len(full_text)} chars, {total:.0f}ms)")
@@ -379,8 +399,14 @@ class ConversationPlugin(Plugin):
         self.app.events.emit("llm_end", {"full_text": full_text, "run_id": run_id})
 
     async def _on_stream_abort(self, reason: str, run_id: str) -> None:
+        if run_id != self._current_run_id:
+            logger.debug(f"Ignoring stale stream_abort (run {run_id[:8]})")
+            return
         logger.info(f"Stream aborted: {reason}")
         await self._stream_text_queue.put(None)
+        # Emit llm_end so the frontend can finalize the streaming thought card
+        # (otherwise it stays with a blinking cursor until the next response).
+        self.app.events.emit("llm_end", {"full_text": "", "run_id": run_id})
 
     async def _on_tool_start(self, tool_name: str, run_id: str) -> None:
         logger.info(f"Tool started: {tool_name}")
@@ -449,12 +475,30 @@ class ConversationPlugin(Plugin):
             parts.append("nobody around")
         return ". ".join(parts)
 
+    def _capture_frame_b64(self) -> str | None:
+        """Capture camera frame, return base64 JPEG. Called from worker thread."""
+        reachy = self.app.reachy
+        if not reachy or not hasattr(reachy, "media") or reachy.media is None:
+            return None
+        frame = reachy.media.get_frame()
+        if frame is None:
+            return None
+        import base64
+
+        import cv2
+
+        _, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        return base64.b64encode(jpg.tobytes()).decode()
+
     def switch_mode(self, mode: str) -> None:
         """Hot-switch between conversation and monologue modes."""
         from ..llm import DEFAULT_SYSTEM_PROMPT
 
         self._monologue_mode = mode == "monologue"
         self.app.config.conversation_mode = mode
+        # Conversation mode requires barge-in; monologue doesn't need it
+        if not self._monologue_mode:
+            self.app.config.barge_in_enabled = True
 
         if isinstance(self._client, OllamaClient):
             if self._monologue_mode:
@@ -717,8 +761,8 @@ class ConversationPlugin(Plugin):
         self._conversation_stopped = True
         logger.info("Conversation STOPPED by gateway command")
         # Thread-safe interrupt: schedule on the event loop
-        loop = asyncio.get_event_loop()
-        loop.call_soon_threadsafe(self._interrupt_event.set)
+        if self._event_loop:
+            self._event_loop.call_soon_threadsafe(self._interrupt_event.set)
         return {"status": "success", "conversation": "stopped"}
 
     def _cmd_resume_conversation(self, params: dict) -> dict:
@@ -796,7 +840,9 @@ class ConversationPlugin(Plugin):
                 # Layer 2: Energy gate — skip low-energy noise
                 energy = float(np.abs(chunk).mean())
                 if energy < self.app.config.barge_in_energy_threshold:
-                    barge_in_count = 0
+                    # Decay instead of hard reset — one quiet frame shouldn't
+                    # erase progress when speech is intermittent with echo.
+                    barge_in_count = max(0, barge_in_count - 1)
                     continue
 
                 # Layer 3: Stricter Silero threshold during playback
@@ -805,7 +851,7 @@ class ConversationPlugin(Plugin):
                         self._vad.speech_probability, chunk, self.app.config.sample_rate
                     )
                     if prob < self.app.config.barge_in_silero_threshold:
-                        barge_in_count = 0
+                        barge_in_count = max(0, barge_in_count - 1)
                         continue
 
                 # All layers passed — count toward confirmation
@@ -814,13 +860,14 @@ class ConversationPlugin(Plugin):
                     logger.info(f"Barge-in confirmed ({barge_in_count} frames)")
                     speech_frames = [chunk]
                     await self._fire_interrupt()
-                    if streaming_stt:
-                        self._stt.cancel_stream()
-                        await asyncio.to_thread(
-                            self._stt.start_stream, self.app.config.sample_rate
-                        )
-                        await asyncio.to_thread(self._stt.feed_chunk, chunk)
                     self._set_state(ConvState.LISTENING)
+                    if streaming_stt:
+                        # Reset STT in one thread call to minimize blocking
+                        def _restart_stt():
+                            self._stt.cancel_stream()
+                            self._stt.start_stream(self.app.config.sample_rate)
+                            self._stt.feed_chunk(chunk)
+                        await asyncio.to_thread(_restart_stt)
                     silence_count = 0
                     barge_in_count = 0
                 continue
@@ -1335,7 +1382,10 @@ class ConversationPlugin(Plugin):
         self.app.is_speaking = False
         if self._wobbler:
             self._wobbler.reset()
-        self._set_state(ConvState.IDLE)
+        # Skip IDLE transition if barge-in already moved us to LISTENING —
+        # otherwise the dashboard briefly flickers LISTENING → IDLE → LISTENING.
+        if self._state != ConvState.LISTENING:
+            self._set_state(ConvState.IDLE)
         if self._client:
             try:
                 state = "stopped" if self._conversation_stopped else "listening"
@@ -1350,21 +1400,32 @@ class ConversationPlugin(Plugin):
     # ── Interrupt ─────────────────────────────────────────────────────
 
     async def _fire_interrupt(self) -> None:
-        """Fire barge-in interrupt: stop playback, drain queues, notify server."""
+        """Fire barge-in interrupt: stop playback, drain queues, notify server.
+
+        Designed to be fast — network calls are fire-and-forget so the audio
+        loop resumes listening immediately after barge-in.
+        """
         logger.info("Firing interrupt")
         self._interrupt_event.set()
 
-        if self._client:
-            await self._client.send_interrupt()
-
-        _drain_queue(self._stream_text_queue)
-        _drain_queue(self._sentence_queue)
-        _drain_queue(self._audio_queue)
-
+        # Stop playback and drain queues immediately (no awaits)
         self._stop_gst_playback_sync()
         self.app.is_speaking = False
         if self._wobbler:
             self._wobbler.reset()
+        _drain_queue(self._stream_text_queue)
+        _drain_queue(self._sentence_queue)
+        _drain_queue(self._audio_queue)
+        # Tell the accumulator to discard its local buffer so stale text
+        # from the interrupted response doesn't flush later.
+        await self._stream_text_queue.put(_RESET_BUFFER)
+
+        # Notify server in background — don't block the audio loop
+        if self._client:
+            self._spawn_task(
+                self._client.send_interrupt(),
+                name="conversation.send_interrupt",
+            )
 
     # ── TTS + interruptible playback ──────────────────────────────────
 

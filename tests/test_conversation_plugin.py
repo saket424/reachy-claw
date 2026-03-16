@@ -413,7 +413,7 @@ class TestConversationCleanup:
 class TestBargeInConfig:
     def test_default_confirm_frames(self):
         config = Config()
-        assert config.barge_in_confirm_frames == 3
+        assert config.barge_in_confirm_frames == 2
 
     def test_custom_confirm_frames(self):
         config = Config(barge_in_confirm_frames=5)
@@ -421,7 +421,7 @@ class TestBargeInConfig:
 
     def test_default_silero_threshold(self):
         config = Config()
-        assert config.barge_in_silero_threshold == 0.6
+        assert config.barge_in_silero_threshold == 0.5
 
     def test_custom_silero_threshold(self):
         config = Config(barge_in_silero_threshold=0.8)
@@ -429,7 +429,7 @@ class TestBargeInConfig:
 
     def test_default_cooldown_ms(self):
         config = Config()
-        assert config.barge_in_cooldown_ms == 500
+        assert config.barge_in_cooldown_ms == 300
 
     def test_custom_cooldown_ms(self):
         config = Config(barge_in_cooldown_ms=1000)

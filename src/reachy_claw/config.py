@@ -55,8 +55,10 @@ class Config:
     sensevoice_language: str = "auto"
     matcha_speaker_id: int = 0
     matcha_speed: float = 1.2
+    matcha_pitch_shift: float = 0.0
     kokoro_speaker_id: int = 3  # zf_001 (中文女声)
     kokoro_speed: float = 1.2
+    kokoro_pitch_shift: float = 0.0
 
     # VAD
     vad_backend: str = "silero"  # "silero", "energy"
@@ -77,9 +79,9 @@ class Config:
     # Barge-in
     barge_in_enabled: bool = True
     barge_in_energy_threshold: float = 0.02
-    barge_in_confirm_frames: int = 3  # consecutive VAD-positive frames before interrupt (~200ms)
-    barge_in_silero_threshold: float = 0.6  # stricter VAD threshold during playback
-    barge_in_cooldown_ms: int = 500  # ignore barge-in for N ms after TTS starts
+    barge_in_confirm_frames: int = 2  # consecutive VAD-positive frames before interrupt (~128ms)
+    barge_in_silero_threshold: float = 0.5  # stricter VAD threshold during playback
+    barge_in_cooldown_ms: int = 300  # ignore barge-in for N ms after TTS starts
 
     # LLM backend (local Ollama, replaces gateway when set)
     llm_backend: str = "gateway"  # "gateway" (OpenClaw) or "ollama"
@@ -89,6 +91,11 @@ class Config:
     ollama_monologue_prompt: str = ""  # empty = use default MONOLOGUE_SYSTEM_PROMPT
     ollama_temperature: float = 0.7
     ollama_max_history: int = 5  # conversation turns to keep (0 = stateless)
+
+    # VLM (Vision Language Model)
+    enable_vlm: bool = False
+    vlm_model: str = "qwen3.5:2b"  # vision model (empty = use ollama_model)
+    vlm_prompt: str = "Describe what you see in this image briefly."
 
     # Behavior
     wake_word: str | None = None
@@ -211,6 +218,9 @@ _YAML_FIELD_MAP: dict[tuple[str, str], str] = {
     ("llm", "monologue_prompt"): "ollama_monologue_prompt",
     ("llm", "temperature"): "ollama_temperature",
     ("llm", "max_history"): "ollama_max_history",
+    ("vlm", "enabled"): "enable_vlm",
+    ("vlm", "model"): "vlm_model",
+    ("vlm", "prompt"): "vlm_prompt",
     ("motion", "emotion_intensity"): "motion_emotion_intensity",
     ("motion", "head_tracking_smoothing"): "motion_head_tracking_smoothing",
     ("motion", "head_tracking_poll_interval"): "motion_head_tracking_poll_interval",
