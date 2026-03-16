@@ -433,6 +433,38 @@ class ConversationPlugin(Plugin):
             logger.info(f"Emotion from server: {emotion}")
             self.app.emotions.queue_emotion(emotion)
 
+    def _get_vision_context(self) -> str:
+        """Return a short face/emotion summary for injection into conversation."""
+        vision = self.app.get_plugin("vision_client")
+        if not vision:
+            return ""
+        descs: list[str] = []
+        if getattr(vision, "_last_faces_summary", None):
+            faces = vision._last_faces_summary
+            named: dict[str, str] = {}
+            stranger_count = 0
+            for f in faces:
+                name = f.get("identity")
+                emo = f.get("emotion", "neutral")
+                if name:
+                    named[name] = emo
+                else:
+                    stranger_count += 1
+            descs = [f"{n} looks {e}" for n, e in named.items()]
+            real_strangers = max(0, stranger_count - len(named))
+            if real_strangers == 1:
+                descs.append("a stranger")
+            elif real_strangers > 1:
+                descs.append(f"{real_strangers} strangers")
+        else:
+            identity = getattr(vision, "current_identity", None)
+            emo = getattr(vision, "_last_emotion", None)
+            if identity:
+                descs.append(f"{identity} looks {emo or 'neutral'}")
+            elif emo and emo != "neutral":
+                descs.append(f"someone looks {emo}")
+        return ", ".join(descs)
+
     # ── Monologue mode ─────────────────────────────────────────────────
 
     def _compose_monologue_prompt(self, transcript: str | None = None) -> str:
@@ -920,6 +952,10 @@ class ConversationPlugin(Plugin):
             if self._state in (ConvState.TRANSCRIBING, ConvState.THINKING):
                 if self._monologue_mode:
                     await self._bg_listen(chunk, streaming_stt)
+                elif streaming_stt:
+                    # Keep feeding audio so STT has context when user speaks
+                    # next — prevents first-syllable loss after silence gap.
+                    await asyncio.to_thread(self._stt.feed_chunk, chunk)
                 continue
 
             # ── IDLE / LISTENING states: accumulate speech ──
@@ -947,8 +983,8 @@ class ConversationPlugin(Plugin):
                     barge_in_count = 0
                     if self._vad:
                         self._vad.reset()
-                    # Cancel STT stream (feed_chunk auto-reconnects on next call)
-                    self._stt.cancel_stream()
+                    # Reset STT and eagerly reconnect so next speech isn't lost
+                    await asyncio.to_thread(self._restart_stt_stream)
                     self._spawn_task(
                         self._process_and_send(text),
                         name="conversation.process_and_send",
@@ -969,8 +1005,8 @@ class ConversationPlugin(Plugin):
                     barge_in_count = 0
                     if self._vad:
                         self._vad.reset()
-                    # Cancel STT stream (feed_chunk auto-reconnects on next call)
-                    self._stt.cancel_stream()
+                    # Reset STT and eagerly reconnect so next speech isn't lost
+                    await asyncio.to_thread(self._restart_stt_stream)
                     self._spawn_task(
                         self._process_and_send(text),
                         name="conversation.process_and_send",
@@ -982,8 +1018,12 @@ class ConversationPlugin(Plugin):
                     self._set_state(ConvState.TRANSCRIBING)
 
                     if streaming_stt:
-                        # Get final text; feed_chunk auto-reconnects later
-                        text = await asyncio.to_thread(self._stt.finish_stream)
+                        # Get final text and eagerly reconnect STT
+                        def _finish_and_restart():
+                            text = self._stt.finish_stream()
+                            self._stt.start_stream(self.app.config.sample_rate)
+                            return text
+                        text = await asyncio.to_thread(_finish_and_restart)
                         speech_frames = []
                         silence_count = 0
                         barge_in_count = 0
@@ -1007,6 +1047,15 @@ class ConversationPlugin(Plugin):
                             self._transcribe_and_send(audio_data),
                             name="conversation.transcribe_and_send",
                         )
+
+    def _restart_stt_stream(self) -> None:
+        """Cancel current STT stream and open a fresh connection immediately.
+
+        Called from worker thread. Eagerly reconnects so that the next
+        feed_chunk doesn't pay WS connection latency.
+        """
+        self._stt.cancel_stream()
+        self._stt.start_stream(self.app.config.sample_rate)
 
     async def _bg_listen(self, chunk: np.ndarray, streaming_stt: bool) -> None:
         """Background listening during SPEAKING/THINKING in monologue mode.
@@ -1134,6 +1183,11 @@ class ConversationPlugin(Plugin):
         # Send to AI
         if self._monologue_mode:
             text = self._compose_monologue_prompt(text)
+        else:
+            # Inject face recognition context into conversation
+            ctx = self._get_vision_context()
+            if ctx:
+                text = f"[Context: {ctx}]\n{text}"
         logger.info("Sending to AI...")
         self._set_state(ConvState.THINKING)
         self._t_send = time.perf_counter()
@@ -1320,9 +1374,10 @@ class ConversationPlugin(Plugin):
                     logger.warning(f"TTS worker synthesis failed: {e}")
                     chunks = None
 
-                # Drop synthesized audio if interrupt fired during synthesis
-                if self._interrupt_event.is_set():
-                    continue
+                # Don't check interrupt_event here — let the output_pipeline
+                # handle draining.  Checking here causes ALL new sentences to
+                # be silently dropped when the event hasn't been cleared yet
+                # (fast responses after barge-in).
 
                 logger.debug(
                     f"TTS ready: \"{clean[:20]}...\" "
@@ -1354,15 +1409,6 @@ class ConversationPlugin(Plugin):
                 continue
 
             item, prefetched_chunks = entry
-
-            # Check if interrupt fired while we were waiting for audio —
-            # TTS worker may have enqueued after _fire_interrupt drained.
-            if self._interrupt_event.is_set():
-                _drain_queue(self._audio_queue)
-                _drain_queue(self._sentence_queue)
-                self._interrupt_event.clear()
-                await self._finish_speaking()
-                continue
 
             if item.is_last and not item.text:
                 await self._finish_speaking()
