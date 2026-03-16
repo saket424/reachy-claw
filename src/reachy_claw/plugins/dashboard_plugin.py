@@ -266,8 +266,71 @@ class DashboardPlugin(Plugin):
                     **motion.get_motor_state(),
                 })
 
+        elif msg_type == "get_voice":
+            await self._broadcast(self._get_voice_settings())
+
+        elif msg_type == "set_voice":
+            sid = int(data.get("speaker_id", 3))
+            pitch = float(data.get("pitch_shift", 0.0))
+            speed = float(data.get("speed", 1.0))
+            # Determine current TTS backend name for config keys
+            backend = self.app.config.tts_backend  # "matcha" or "kokoro"
+            setattr(self.app.config, f"{backend}_speaker_id", sid)
+            setattr(self.app.config, f"{backend}_pitch_shift", pitch)
+            setattr(self.app.config, f"{backend}_speed", speed)
+            # Hot-apply to running TTS backend
+            conv = self.app.get_plugin("conversation")
+            if conv and hasattr(conv, "_tts"):
+                tts = conv._tts
+                # Unwrap reconnecting proxy if needed
+                if hasattr(tts, "_backend"):
+                    tts = tts._backend
+                if hasattr(tts, "_speaker_id"):
+                    tts._speaker_id = sid
+                if hasattr(tts, "_pitch_shift"):
+                    tts._pitch_shift = pitch
+                if hasattr(tts, "_speed"):
+                    tts._speed = speed
+            self._save_overrides([
+                f"{backend}_speaker_id",
+                f"{backend}_pitch_shift",
+                f"{backend}_speed",
+            ])
+            await self._broadcast(self._get_voice_settings())
+
+        elif msg_type == "set_vlm":
+            enabled = bool(data.get("enabled", False))
+            self.app.config.enable_vlm = enabled
+            conv = self.app.get_plugin("conversation")
+            if conv and hasattr(conv, "_client") and hasattr(conv._client, "_config"):
+                conv._client._config.enable_vlm = enabled
+            self._save_overrides(["enable_vlm"])
+            await self._broadcast({"type": "vlm_state", "enabled": enabled})
+
+        elif msg_type == "get_vlm":
+            await self._broadcast({"type": "vlm_state", "enabled": self.app.config.enable_vlm})
+
+        elif msg_type == "set_bargein":
+            enabled = bool(data.get("enabled", True))
+            self.app.config.barge_in_enabled = enabled
+            self._save_overrides(["barge_in_enabled"])
+            await self._broadcast({"type": "bargein_state", "enabled": enabled})
+
+        elif msg_type == "get_bargein":
+            await self._broadcast({"type": "bargein_state", "enabled": self.app.config.barge_in_enabled})
+
         elif msg_type == "get_capture_info":
             await self._send_capture_info()
+
+    def _get_voice_settings(self) -> dict:
+        """Return current voice settings for the active TTS backend."""
+        backend = self.app.config.tts_backend
+        return {
+            "type": "voice_settings",
+            "speaker_id": getattr(self.app.config, f"{backend}_speaker_id", 0),
+            "pitch_shift": getattr(self.app.config, f"{backend}_pitch_shift", 0.0),
+            "speed": getattr(self.app.config, f"{backend}_speed", 1.0),
+        }
 
     async def _send_capture_info(self) -> None:
         """Send capture storage info (path + count) to dashboard."""
@@ -497,6 +560,8 @@ class DashboardPlugin(Plugin):
                 "confidence": round(target.confidence, 2),
             },
             "mode": self.app.config.conversation_mode,
+            "vlm_enabled": self.app.config.enable_vlm,
+            "barge_in_enabled": self.app.config.barge_in_enabled,
             "capture_count": self._capture_count,
         })
 

@@ -143,6 +143,13 @@ function connectDashboard() {
 
     dashboardWs.onclose = () => {
         document.getElementById('dot-jetson').className = 'dot off';
+        // Reset streaming state so a mid-stream disconnect doesn't leave
+        // a permanent "typing" card with blinking cursor.
+        if (isStreaming) {
+            isStreaming = false;
+            currentRunId = null;
+            finalizeThoughtCard(null);
+        }
         dashRetry = Math.min(dashRetry * 1.5, 10000);
         setTimeout(connectDashboard, dashRetry);
     };
@@ -153,7 +160,7 @@ function connectDashboard() {
 function handleDashboardMsg(msg) {
     switch(msg.type) {
         case 'asr_partial':
-            asrTextEl.innerHTML = msg.text;
+            asrTextEl.textContent = msg.text;
             asrTextEl.className = 'asr-text partial';
             triggerAsrActive();
             resetAsrIdleTimer();
@@ -161,7 +168,7 @@ function handleDashboardMsg(msg) {
 
         case 'asr_final':
             if (msg.text) {
-                asrTextEl.innerHTML = msg.text;
+                asrTextEl.textContent = msg.text;
                 asrTextEl.className = 'asr-text';
                 triggerAsrActive();
                 resetAsrIdleTimer();
@@ -260,6 +267,10 @@ function handleDashboardMsg(msg) {
             document.getElementById('capture-storage-path').textContent = msg.path || '--';
             break;
 
+        case 'voice_settings':
+            setVoiceUI(msg.speaker_id, msg.pitch_shift, msg.speed);
+            break;
+
         case 'motor_state':
             motorEnabled = msg.enabled !== false;
             motorPreset = msg.preset || 'moderate';
@@ -270,6 +281,18 @@ function handleDashboardMsg(msg) {
             syncMotorPresetUI();
             updateMotorStatus();
             break;
+
+        case 'vlm_state': {
+            const vlmToggle = document.getElementById('vlm-toggle');
+            if (vlmToggle) vlmToggle.classList.toggle('active', !!msg.enabled);
+            break;
+        }
+
+        case 'bargein_state': {
+            const bargeinToggle = document.getElementById('bargein-toggle');
+            if (bargeinToggle) bargeinToggle.classList.toggle('active', !!msg.enabled);
+            break;
+        }
     }
 }
 
@@ -336,7 +359,14 @@ function updateStreamingCard() {
     const card = thoughtList.querySelector('.thought-card.streaming');
     if (!card) return;
     const textEl = card.querySelector('.thought-text');
-    textEl.innerHTML = currentLlmText + '<span class="typing-cursor"></span>';
+    textEl.textContent = currentLlmText;
+    // Append typing cursor element (safe — no user content in innerHTML)
+    let cursor = textEl.querySelector('.typing-cursor');
+    if (!cursor) {
+        cursor = document.createElement('span');
+        cursor.className = 'typing-cursor';
+        textEl.appendChild(cursor);
+    }
 }
 
 function finalizeThoughtCard(emotion) {
@@ -432,6 +462,15 @@ function updateRobotState(msg) {
     if (msg.capture_count !== undefined) {
         captureCount = msg.capture_count;
         captureCountEl.textContent = captureCount;
+    }
+    // Sync VLM and barge-in toggles
+    const vlmToggle = document.getElementById('vlm-toggle');
+    if (vlmToggle && msg.vlm_enabled !== undefined) {
+        vlmToggle.classList.toggle('active', !!msg.vlm_enabled);
+    }
+    const bargeinToggle = document.getElementById('bargein-toggle');
+    if (bargeinToggle && msg.barge_in_enabled !== undefined) {
+        bargeinToggle.classList.toggle('active', !!msg.barge_in_enabled);
     }
     document.getElementById('dot-robot').className = 'dot live';
 }
@@ -719,6 +758,7 @@ function initSettings() {
         if (dashboardWs && dashboardWs.readyState === 1) {
             dashboardWs.send(JSON.stringify({ type: 'get_volume' }));
             dashboardWs.send(JSON.stringify({ type: 'get_motor' }));
+            dashboardWs.send(JSON.stringify({ type: 'get_voice' }));
         }
     };
     document.getElementById('settings-close').onclick = () => {
@@ -736,6 +776,12 @@ function initSettings() {
             tab.classList.add('active');
             document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
             if (tab.dataset.tab === 'faces') loadCaptureInfo();
+            if (tab.dataset.tab === 'detail') {
+                if (dashboardWs && dashboardWs.readyState === 1) {
+                    dashboardWs.send(JSON.stringify({ type: 'get_voice' }));
+                    dashboardWs.send(JSON.stringify({ type: 'get_motor' }));
+                }
+            }
             if (tab.dataset.tab === 'prompt') loadPrompts();
         };
     });
@@ -786,6 +832,9 @@ function initSettings() {
         savePrompt('monologue', '');
     };
 
+    // Voice settings (speaker, pitch, speed)
+    initVoice();
+
     // Volume control
     initVolume();
 
@@ -794,6 +843,30 @@ function initSettings() {
 
     // Motor control
     initMotor();
+
+    // VLM toggle
+    const vlmToggle = document.getElementById('vlm-toggle');
+    if (vlmToggle) {
+        vlmToggle.onclick = () => {
+            const enabled = !vlmToggle.classList.contains('active');
+            vlmToggle.classList.toggle('active', enabled);
+            if (dashboardWs && dashboardWs.readyState === 1) {
+                dashboardWs.send(JSON.stringify({ type: 'set_vlm', enabled }));
+            }
+        };
+    }
+
+    // Barge-in toggle
+    const bargeinToggle = document.getElementById('bargein-toggle');
+    if (bargeinToggle) {
+        bargeinToggle.onclick = () => {
+            const enabled = !bargeinToggle.classList.contains('active');
+            bargeinToggle.classList.toggle('active', enabled);
+            if (dashboardWs && dashboardWs.readyState === 1) {
+                dashboardWs.send(JSON.stringify({ type: 'set_bargein', enabled }));
+            }
+        };
+    }
 
     // Restart services
     initRestart();
@@ -886,6 +959,8 @@ function syncModeUI() {
         opt.querySelector('input').checked = opt.dataset.mode === currentMode;
     });
     document.getElementById('mode-status').textContent = 'Current: ' + currentMode;
+    const toggles = document.getElementById('mode-toggles');
+    if (toggles) toggles.style.display = currentMode === 'conversation' ? '' : 'none';
 }
 
 function setMode(mode) {
@@ -1072,6 +1147,59 @@ document.getElementById('capture-export-btn').onclick = async () => {
         showToast('Export failed', true);
     }
 };
+
+// ── Voice Settings ──────────────────────────────────────────────────
+let voiceSid = 3;
+let voicePitch = 1.5;
+let voiceSpeed = 0.8;
+
+function initVoice() {
+    const sidInput = document.getElementById('voice-sid');
+    const pitchSlider = document.getElementById('voice-pitch');
+    const pitchValue = document.getElementById('voice-pitch-value');
+    const speedSlider = document.getElementById('voice-speed');
+    const speedValue = document.getElementById('voice-speed-value');
+
+    sidInput.onchange = () => {
+        voiceSid = Math.max(0, parseInt(sidInput.value) || 0);
+        sidInput.value = voiceSid;
+        sendVoice();
+    };
+
+    pitchSlider.oninput = () => {
+        voicePitch = parseFloat(pitchSlider.value);
+        pitchValue.textContent = (voicePitch >= 0 ? '+' : '') + voicePitch.toFixed(1);
+    };
+    pitchSlider.onchange = () => sendVoice();
+
+    speedSlider.oninput = () => {
+        voiceSpeed = parseFloat(speedSlider.value);
+        speedValue.textContent = voiceSpeed.toFixed(1) + 'x';
+    };
+    speedSlider.onchange = () => sendVoice();
+}
+
+function setVoiceUI(sid, pitch, speed) {
+    voiceSid = sid;
+    voicePitch = pitch;
+    voiceSpeed = speed;
+    document.getElementById('voice-sid').value = sid;
+    document.getElementById('voice-pitch').value = pitch;
+    document.getElementById('voice-pitch-value').textContent = (pitch >= 0 ? '+' : '') + pitch.toFixed(1);
+    document.getElementById('voice-speed').value = speed;
+    document.getElementById('voice-speed-value').textContent = speed.toFixed(1) + 'x';
+}
+
+function sendVoice() {
+    if (dashboardWs && dashboardWs.readyState === 1) {
+        dashboardWs.send(JSON.stringify({
+            type: 'set_voice',
+            speaker_id: voiceSid,
+            pitch_shift: voicePitch,
+            speed: voiceSpeed,
+        }));
+    }
+}
 
 // ── Motor Control ───────────────────────────────────────────────────
 let motorEnabled = true;

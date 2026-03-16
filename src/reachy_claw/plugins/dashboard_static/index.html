@@ -90,8 +90,9 @@
             <button class="settings-close" id="settings-close">&times;</button>
         </div>
         <div class="settings-tabs">
-            <button class="settings-tab active" data-tab="mode">Configuration</button>
+            <button class="settings-tab active" data-tab="mode">General</button>
             <button class="settings-tab" data-tab="faces">Face Management</button>
+            <button class="settings-tab" data-tab="detail">Details</button>
             <button class="settings-tab" data-tab="prompt">Prompt</button>
         </div>
         <div class="settings-content">
@@ -115,6 +116,20 @@
                     </label>
                 </div>
                 <div class="mode-status" id="mode-status">Current: conversation</div>
+                <div class="mode-toggles" id="mode-toggles">
+                    <div class="toggle-row">
+                        <span class="toggle-label">Camera Vision (VLM)</span>
+                        <button class="motor-sleep-toggle" id="vlm-toggle" title="Toggle VLM on/off">
+                            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                        </button>
+                    </div>
+                    <div class="toggle-row">
+                        <span class="toggle-label">Barge-in (Interrupts)</span>
+                        <button class="motor-sleep-toggle active" id="bargein-toggle" title="Toggle barge-in">
+                            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                        </button>
+                    </div>
+                </div>
                 <div class="memory-section">
                     <h3>Memory</h3>
                     <div class="volume-row">
@@ -133,42 +148,6 @@
                         <input type="range" class="volume-slider" id="volume-slider" min="0" max="100" value="80">
                         <span class="volume-value" id="volume-value">80%</span>
                     </div>
-                </div>
-                <div class="motor-section">
-                    <h3>Motor Control</h3>
-                    <div class="motor-sleep-row">
-                        <span class="motor-sleep-label">Motor Enabled</span>
-                        <button class="motor-sleep-toggle active" id="motor-toggle" title="Toggle motor on/off">
-                            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                        </button>
-                    </div>
-                    <div class="motor-presets" id="motor-presets">
-                        <label class="mode-option" data-motor="sensitive">
-                            <input type="radio" name="motor-preset" value="sensitive">
-                            <div class="mode-radio"></div>
-                            <div class="mode-info">
-                                <h3>Sensitive</h3>
-                                <p>Fast, responsive tracking. Best for demos and close interaction.</p>
-                            </div>
-                        </label>
-                        <label class="mode-option selected" data-motor="moderate">
-                            <input type="radio" name="motor-preset" value="moderate" checked>
-                            <div class="mode-radio"></div>
-                            <div class="mode-info">
-                                <h3>Moderate</h3>
-                                <p>Balanced speed and smoothness. Default for most scenarios.</p>
-                            </div>
-                        </label>
-                        <label class="mode-option" data-motor="smart">
-                            <input type="radio" name="motor-preset" value="smart">
-                            <div class="mode-radio"></div>
-                            <div class="mode-info">
-                                <h3>Smart</h3>
-                                <p>Adaptive tracking that learns movement patterns. Smoother, more natural.</p>
-                            </div>
-                        </label>
-                    </div>
-                    <div class="motor-status" id="motor-status">Motor: moderate</div>
                 </div>
                 <div class="restart-section">
                     <h3>Services</h3>
@@ -225,8 +204,68 @@
                     </div>
                 </div>
             </div>
+            <div class="tab-pane" id="tab-detail">
+                <div class="detail-section">
+                    <h3>Voice</h3>
+                    <div class="volume-row">
+                        <span class="voice-label">Speaker ID</span>
+                        <input type="number" class="voice-input" id="voice-sid" min="0" max="99" value="3">
+                    </div>
+                    <div class="volume-row">
+                        <span class="voice-label">Pitch</span>
+                        <input type="range" class="volume-slider" id="voice-pitch" min="-6" max="6" step="0.5" value="1.5">
+                        <span class="volume-value" id="voice-pitch-value">+1.5</span>
+                    </div>
+                    <div class="volume-row">
+                        <span class="voice-label">Speed</span>
+                        <input type="range" class="volume-slider" id="voice-speed" min="0.3" max="2.0" step="0.1" value="0.8">
+                        <span class="volume-value" id="voice-speed-value">0.8x</span>
+                    </div>
+                </div>
+                <div class="detail-section">
+                    <h3>Motor</h3>
+                    <div class="toggle-grid">
+                        <div class="toggle-row">
+                            <span class="toggle-label">Motor Enabled</span>
+                            <button class="motor-sleep-toggle active" id="motor-toggle" title="Toggle motor on/off">
+                                <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="motor-status" id="motor-status">Motor: moderate</div>
+                </div>
+                <div class="detail-section">
+                    <h3>Motor Preset</h3>
+                    <div class="motor-presets" id="motor-presets">
+                        <label class="mode-option" data-motor="sensitive">
+                            <input type="radio" name="motor-preset" value="sensitive">
+                            <div class="mode-radio"></div>
+                            <div class="mode-info">
+                                <h3>Sensitive</h3>
+                                <p>Fast, responsive tracking. Best for demos and close interaction.</p>
+                            </div>
+                        </label>
+                        <label class="mode-option selected" data-motor="moderate">
+                            <input type="radio" name="motor-preset" value="moderate" checked>
+                            <div class="mode-radio"></div>
+                            <div class="mode-info">
+                                <h3>Moderate</h3>
+                                <p>Balanced speed and smoothness. Default for most scenarios.</p>
+                            </div>
+                        </label>
+                        <label class="mode-option" data-motor="smart">
+                            <input type="radio" name="motor-preset" value="smart">
+                            <div class="mode-radio"></div>
+                            <div class="mode-info">
+                                <h3>Smart</h3>
+                                <p>Adaptive tracking that learns movement patterns. Smoother, more natural.</p>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+            </div>
             <div class="tab-pane" id="tab-prompt">
-                <div class="face-section">
+                <div class="detail-section">
                     <h3>Conversation Prompt</h3>
                     <textarea id="prompt-conversation" rows="8" class="prompt-textarea"></textarea>
                     <div class="prompt-actions">
@@ -234,7 +273,7 @@
                         <button class="enroll-btn" id="prompt-conv-save">Save</button>
                     </div>
                 </div>
-                <div class="face-section">
+                <div class="detail-section">
                     <h3>Monologue Prompt</h3>
                     <textarea id="prompt-monologue" rows="8" class="prompt-textarea"></textarea>
                     <div class="prompt-actions">

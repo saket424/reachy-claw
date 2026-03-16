@@ -608,6 +608,10 @@ body {
     font-size: 11px; color: var(--green);
 }
 
+.mode-toggles {
+    display: flex; flex-direction: column; gap: 8px; margin-top: 12px;
+}
+
 /* Memory */
 .memory-section { margin-top: 20px; }
 .memory-section h3 { font-size: 13px; color: var(--text); margin-bottom: 10px; }
@@ -689,6 +693,32 @@ body {
     margin-top: 8px; font-size: 11px; color: var(--text-dim);
     min-height: 16px;
 }
+
+/* Details tab sections */
+.detail-section { margin-bottom: 28px; }
+.detail-section h3 {
+    font-size: 11px; font-weight: 600; letter-spacing: 1px;
+    color: var(--text); text-transform: uppercase; margin-bottom: 14px;
+}
+.detail-section .volume-row { margin-bottom: 12px; padding-left: 12px; }
+.detail-section .volume-row:last-child { margin-bottom: 0; }
+.voice-label {
+    font-size: 12px; color: var(--muted); min-width: 76px; flex-shrink: 0;
+}
+.voice-input {
+    width: 64px; padding: 6px 8px; font-size: 13px; text-align: center;
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; outline: none; -moz-appearance: textfield;
+}
+.voice-input::-webkit-inner-spin-button,
+.voice-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.voice-input:focus { border-color: var(--accent); }
+.toggle-grid { display: flex; flex-direction: column; gap: 8px; }
+.toggle-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px;
+}
+.toggle-label { font-size: 13px; color: var(--text); }
 
 /* Face management */
 .face-section { margin-bottom: 20px; }
