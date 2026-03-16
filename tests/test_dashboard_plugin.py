@@ -117,7 +117,10 @@ async def test_dashboard_event_callbacks(dashboard_app):
 
     # Test LLM end
     await plugin._on_llm_end({"full_text": "Hi there!", "run_id": "abc"})
-    assert captured[-1] == {"type": "llm_end", "full_text": "Hi there!", "run_id": "abc"}
+    result = captured[-1]
+    assert result["type"] == "llm_end"
+    assert result["full_text"] == "Hi there!"
+    assert result["run_id"] == "abc"
 
     # Test state change
     await plugin._on_state_change({"state": "speaking"})

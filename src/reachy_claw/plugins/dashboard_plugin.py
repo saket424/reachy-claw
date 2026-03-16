@@ -321,6 +321,18 @@ class DashboardPlugin(Plugin):
         elif msg_type == "get_bargein":
             await self._broadcast({"type": "bargein_state", "enabled": self.app.config.barge_in_enabled})
 
+        elif msg_type == "set_vad_threshold":
+            val = float(data.get("value", 0.3))
+            self.app.config.silero_threshold = val
+            self._save_overrides(["silero_threshold"])
+            await self._broadcast({"type": "vad_threshold", "value": val})
+
+        elif msg_type == "set_energy_threshold":
+            val = float(data.get("value", 0.02))
+            self.app.config.barge_in_energy_threshold = val
+            self._save_overrides(["barge_in_energy_threshold"])
+            await self._broadcast({"type": "energy_threshold", "value": val})
+
         elif msg_type == "get_capture_info":
             await self._send_capture_info()
 
@@ -565,6 +577,8 @@ class DashboardPlugin(Plugin):
             "vlm_enabled": self.app.config.enable_vlm,
             "barge_in_enabled": self.app.config.barge_in_enabled,
             "capture_count": self._capture_count,
+            "silero_threshold": self.app.config.silero_threshold,
+            "barge_in_energy_threshold": self.app.config.barge_in_energy_threshold,
         })
 
     # ── EventBus callbacks ────────────────────────────────────────────

@@ -223,19 +223,26 @@
                     </div>
                 </div>
                 <div class="detail-section">
-                    <h3>Motor</h3>
-                    <div class="toggle-grid">
-                        <div class="toggle-row">
-                            <span class="toggle-label">Motor Enabled</span>
-                            <button class="motor-sleep-toggle active" id="motor-toggle" title="Toggle motor on/off">
-                                <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                            </button>
-                        </div>
+                    <h3>Audio Detection</h3>
+                    <div class="volume-row">
+                        <span class="voice-label">VAD Threshold</span>
+                        <input type="range" class="volume-slider" id="vad-threshold" min="0.1" max="0.9" step="0.05" value="0.3">
+                        <span class="volume-value" id="vad-threshold-value">0.30</span>
                     </div>
-                    <div class="motor-status" id="motor-status">Motor: moderate</div>
+                    <div class="volume-row">
+                        <span class="voice-label">Energy Threshold</span>
+                        <input type="range" class="volume-slider" id="energy-threshold" min="0.005" max="0.1" step="0.005" value="0.02">
+                        <span class="volume-value" id="energy-threshold-value">0.020</span>
+                    </div>
+                    <p class="memory-hint">Higher = less sensitive to background noise</p>
                 </div>
                 <div class="detail-section">
-                    <h3>Motor Preset</h3>
+                    <div class="section-title-row">
+                        <h3>Motor</h3>
+                        <button class="motor-sleep-toggle active" id="motor-toggle" title="Toggle motor on/off">
+                            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                        </button>
+                    </div>
                     <div class="motor-presets" id="motor-presets">
                         <label class="mode-option" data-motor="sensitive">
                             <input type="radio" name="motor-preset" value="sensitive">

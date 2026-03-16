@@ -1166,6 +1166,22 @@ class ConversationPlugin(Plugin):
             self._set_state(ConvState.IDLE)
             return
 
+        # Filter out background noise transcriptions.
+        # STT often produces short repetitive fragments from ambient sound
+        # (e.g. "SHE SAYS SHE", "THE THE", "HMM HMM HMM").
+        # Real speech like "hi" or "hello how are you" should pass.
+        stripped = text.strip()
+        alpha_only = re.sub(r"[^\w\s]", "", stripped)
+        words = alpha_only.split()
+        if words:
+            unique_words = set(w.lower() for w in words)
+            # Noise pattern: many words but very few unique (repetitive)
+            if len(words) >= 3 and len(unique_words) <= 2:
+                logger.info(f'Ignoring repetitive noise: "{stripped}"')
+                self.app.events.emit("asr_final", {"text": ""})
+                self._set_state(ConvState.IDLE)
+                return
+
         logger.info(f'You said: "{text}"')
         self.app.events.emit("asr_final", {"text": text})
 
@@ -1176,7 +1192,7 @@ class ConversationPlugin(Plugin):
                 self._set_state(ConvState.IDLE)
                 return
             logger.info("Wake word detected!")
-            if self.app.reachy:
+            if self.app.reachy and self.app.motor_enabled:
                 try:
                     self.app.reachy.set_target_antenna_joint_positions([0.7, -0.7])
                     await asyncio.sleep(0.2)
@@ -1255,6 +1271,9 @@ class ConversationPlugin(Plugin):
 
         while self._running:
             await asyncio.sleep(1.0)  # check every second
+
+            if not self._monologue_mode:
+                continue  # mode switched — stay alive but do nothing
 
             if (
                 self._state != ConvState.IDLE
@@ -1634,7 +1653,8 @@ class ConversationPlugin(Plugin):
                 finally:
                     if self._wobbler:
                         self._wobbler.reset()
-                    reachy.set_target_antenna_joint_positions([0.0, 0.0])
+                    if self.app.motor_enabled:
+                        reachy.set_target_antenna_joint_positions([0.0, 0.0])
 
                 # Push a fade-out tail to avoid pop/click between sentences
                 # or when pipeline stops.  Ramps from last sample to zero.
@@ -1802,7 +1822,8 @@ class ConversationPlugin(Plugin):
             if self._wobbler:
                 self._wobbler.reset()
 
-            reachy.set_target_antenna_joint_positions([0.0, 0.0])
+            if self.app.motor_enabled:
+                reachy.set_target_antenna_joint_positions([0.0, 0.0])
             if not interrupted:
                 # Wait for ALSA buffer to drain (last chunks + hw buffer)
                 await asyncio.sleep(0.8)

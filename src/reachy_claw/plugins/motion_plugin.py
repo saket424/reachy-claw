@@ -62,6 +62,7 @@ class MotionPlugin(Plugin):
         super().__init__(app)
         # Motor enable/disable (sleep mode) — restore from persisted config
         self._motor_enabled = getattr(app.config, "motor_enabled", True)
+        app.motor_enabled = self._motor_enabled
         self._motor_preset = getattr(app.config, "motor_preset", "moderate")
         if self._motor_preset not in self.MOTOR_PRESETS:
             self._motor_preset = "moderate"
@@ -101,6 +102,7 @@ class MotionPlugin(Plugin):
     def set_motor_enabled(self, enabled: bool) -> None:
         """Enable or disable motor output (sleep mode)."""
         self._motor_enabled = enabled
+        self.app.motor_enabled = enabled
         logger.info("Motor %s", "enabled" if enabled else "disabled (sleep)")
 
     def apply_motor_preset(self, preset: str) -> None:

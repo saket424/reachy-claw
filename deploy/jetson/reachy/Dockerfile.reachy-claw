@@ -1,5 +1,8 @@
 # Multi-stage build: compile native deps in builder, copy to slim runtime
 # No PyTorch — silero VAD runs via pure onnxruntime (~130MB vs ~900MB)
+#
+# Layer strategy: dependencies are installed BEFORE source code is copied,
+# so code-only changes produce tiny layers (~few MB) for fast user updates.
 
 # ── Builder ──────────────────────────────────────────────────────────
 FROM python:3.12-slim AS builder
@@ -11,8 +14,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY . .
 
+# 1) Copy only dependency metadata first (cache-friendly)
+COPY pyproject.toml README.md ./
+# Minimal stub so pip can resolve the package
+RUN mkdir -p src/reachy_claw && echo '__version__ = "0.0.0"' > src/reachy_claw/__init__.py
+
+# 2) Install all dependencies (cached unless pyproject.toml changes)
 RUN pip install --no-cache-dir --prefix=/install onnxruntime
 RUN pip install --no-cache-dir --prefix=/install ".[audio,mediapipe-vision,remote-vision,dashboard]"
 
@@ -34,6 +42,9 @@ RUN rm -rf /install/lib/python3.12/site-packages/torch* \
            /install/lib/python3.12/site-packages/opt_einsum* \
            /install/lib/python3.12/site-packages/pip*
 
+# 3) Copy full source (only this layer changes on code updates)
+COPY . .
+
 # ── Runtime ──────────────────────────────────────────────────────────
 FROM python:3.12-slim
 
@@ -50,8 +61,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Fix: v4l2src gets stuck at PAUSED→PLAYING inside Docker without libv4l2
 ENV GST_V4L2_USE_LIBV4L2=1
 
-# Copy installed packages from builder
+# Copy installed packages from builder (large, cached)
 COPY --from=builder /install /usr/local
+
+# Copy source code (small, changes frequently)
 COPY --from=builder /build /app
 
 WORKDIR /app

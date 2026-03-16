@@ -492,6 +492,19 @@ function updateRobotState(msg) {
     if (bargeinToggle && msg.barge_in_enabled !== undefined) {
         bargeinToggle.classList.toggle('active', !!msg.barge_in_enabled);
     }
+    // Sync audio detection sliders
+    if (msg.silero_threshold !== undefined) {
+        const el = document.getElementById('vad-threshold');
+        if (el) { el.value = msg.silero_threshold; }
+        const lbl = document.getElementById('vad-threshold-value');
+        if (lbl) { lbl.textContent = msg.silero_threshold.toFixed(2); }
+    }
+    if (msg.barge_in_energy_threshold !== undefined) {
+        const el = document.getElementById('energy-threshold');
+        if (el) { el.value = msg.barge_in_energy_threshold; }
+        const lbl = document.getElementById('energy-threshold-value');
+        if (lbl) { lbl.textContent = msg.barge_in_energy_threshold.toFixed(3); }
+    }
     document.getElementById('dot-robot').className = 'dot live';
 }
 
@@ -861,6 +874,7 @@ function initSettings() {
 
     // Voice settings (speaker, pitch, speed)
     initVoice();
+    initAudioDetection();
 
     // Volume control
     initVolume();
@@ -1230,6 +1244,41 @@ function sendVoice() {
     }
 }
 
+// ── Audio detection sliders ──────────────────────────────────────────
+function initAudioDetection() {
+    const vadSlider = document.getElementById('vad-threshold');
+    const vadValue = document.getElementById('vad-threshold-value');
+    const energySlider = document.getElementById('energy-threshold');
+    const energyValue = document.getElementById('energy-threshold-value');
+
+    if (vadSlider) {
+        vadSlider.oninput = () => {
+            vadValue.textContent = parseFloat(vadSlider.value).toFixed(2);
+        };
+        vadSlider.onchange = () => {
+            if (dashboardWs && dashboardWs.readyState === 1) {
+                dashboardWs.send(JSON.stringify({
+                    type: 'set_vad_threshold',
+                    value: parseFloat(vadSlider.value),
+                }));
+            }
+        };
+    }
+    if (energySlider) {
+        energySlider.oninput = () => {
+            energyValue.textContent = parseFloat(energySlider.value).toFixed(3);
+        };
+        energySlider.onchange = () => {
+            if (dashboardWs && dashboardWs.readyState === 1) {
+                dashboardWs.send(JSON.stringify({
+                    type: 'set_energy_threshold',
+                    value: parseFloat(energySlider.value),
+                }));
+            }
+        };
+    }
+}
+
 // ── Motor Control ───────────────────────────────────────────────────
 let motorEnabled = true;
 let motorPreset = 'moderate';
@@ -1274,10 +1323,8 @@ function syncMotorPresetUI() {
 
 function updateMotorStatus() {
     const el = document.getElementById('motor-status');
-    if (!motorEnabled) {
-        el.textContent = 'Motor: sleep (disabled)';
-    } else {
-        el.textContent = 'Motor: ' + motorPreset;
+    if (el) {
+        el.textContent = motorEnabled ? 'Motor: ' + motorPreset : 'Motor: sleep (disabled)';
     }
 }
 

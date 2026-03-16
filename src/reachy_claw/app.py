@@ -34,6 +34,7 @@ class ReachyClawApp:
         self.is_speaking = False
         self.running = False
         self.healthy = False
+        self.motor_enabled = True
 
         self._plugins: List[Plugin] = []
 
