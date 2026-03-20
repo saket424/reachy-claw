@@ -10,7 +10,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 <p align="center">
-  <img src="media/logo.png" alt="Reachy Claw" width="200" />
+  <img src="media/demo.gif" alt="Reachy Claw demo" width="360" />
 </p>
 
 <!-- TODO: Add a demo GIF below the logo showing the robot reacting to speech -->
