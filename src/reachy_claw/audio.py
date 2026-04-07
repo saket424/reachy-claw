@@ -254,29 +254,88 @@ class AudioCapture:
         return energy > self.config.silence_threshold
 
     def _bg_reader_loop(self, frames: int) -> None:
-        """Background thread: continuously read mic into asyncio queue."""
-        import sounddevice as sd
+        """Background thread: continuously read mic into asyncio queue.
 
-        try:
-            stream = sd.InputStream(
+        Includes a watchdog: if the stream produces near-zero RMS for
+        _SILENCE_WATCHDOG_SEC consecutive seconds, we assume the PulseAudio
+        connection has died (device SUSPENDED / socket dropped) and reopen it.
+        """
+        import sounddevice as sd
+        import time
+
+        _SILENCE_WATCHDOG_SEC = 30  # reopen after 30s of dead-silent input
+        _SILENCE_RMS_FLOOR = 1e-6   # anything below this counts as dead silence
+
+        def _open_stream():
+            s = sd.InputStream(
                 samplerate=self.config.sample_rate,
                 channels=1,
                 dtype=np.float32,
                 device=self._device_id,
                 blocksize=frames,
             )
-            stream.start()
+            s.start()
+            return s
+
+        try:
+            stream = _open_stream()
             logger.debug(f"BG reader: started on device {self._device_id}")
         except Exception as e:
             logger.error(f"BG reader: failed to open mic: {e}")
             return
 
+        silent_since: float | None = None
+
         try:
             while self._running:
-                data, overflowed = stream.read(frames)
+                try:
+                    data, overflowed = stream.read(frames)
+                except Exception as e:
+                    if self._running:
+                        logger.warning(f"BG reader: stream read error ({e}), reopening")
+                    try:
+                        stream.stop(); stream.close()
+                    except Exception:
+                        pass
+                    import time as _time; _time.sleep(1)
+                    try:
+                        stream = _open_stream()
+                        silent_since = None
+                        logger.debug("BG reader: stream reopened after read error")
+                    except Exception as e2:
+                        logger.error(f"BG reader: reopen failed: {e2}")
+                    continue
+
                 if overflowed:
                     logger.debug("Audio buffer overflow in bg reader")
+
                 chunk = data.flatten()
+
+                # Watchdog: track how long the stream has been dead-silent
+                rms = float(np.sqrt(np.mean(chunk ** 2)))
+                now = time.monotonic()
+                if rms < _SILENCE_RMS_FLOOR:
+                    if silent_since is None:
+                        silent_since = now
+                    elif (now - silent_since) > _SILENCE_WATCHDOG_SEC:
+                        logger.warning(
+                            f"BG reader: {_SILENCE_WATCHDOG_SEC}s of dead silence, reopening stream"
+                        )
+                        try:
+                            stream.stop(); stream.close()
+                        except Exception:
+                            pass
+                        import time as _time; _time.sleep(1)
+                        try:
+                            stream = _open_stream()
+                            logger.debug("BG reader: stream reopened after silence watchdog")
+                        except Exception as e2:
+                            logger.error(f"BG reader: reopen failed: {e2}")
+                        silent_since = None
+                        continue
+                else:
+                    silent_since = None
+
                 try:
                     self._loop.call_soon_threadsafe(
                         self._chunk_queue.put_nowait, chunk

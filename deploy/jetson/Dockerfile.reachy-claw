@@ -14,7 +14,9 @@ ENV GST_V4L2_USE_LIBV4L2=1
 
 WORKDIR /app
 COPY . .
-RUN pip install --no-cache-dir silero-vad onnxruntime
-RUN pip install --no-cache-dir -e ".[audio,mediapipe-vision]"
+# aarch64 notes:
+#   - silero-vad omitted: pulls PyTorch (2GB), use energy VAD instead
+#   - mediapipe-vision omitted: no aarch64 PyPI wheel, face tracking disabled
+RUN pip install --no-cache-dir -e ".[audio]"
 
 CMD ["reachy-claw", "-v"]

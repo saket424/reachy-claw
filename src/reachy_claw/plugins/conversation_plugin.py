@@ -1849,51 +1849,74 @@ class ConversationPlugin(Plugin):
                         out_device = i
                         break
 
-            # Resample to device rate if needed (Reachy Mini Audio = 16000Hz only)
+            # Resample to device's native rate — OutputStream requires an exact
+            # match; unlike sd.play(), it won't auto-negotiate with PulseAudio.
             play_audio = audio
             play_rate = sample_rate
-            if out_device is not None:
-                dev_info = sd.query_devices(out_device)
-                # Reachy Mini Audio only supports 16000Hz but ALSA may
-                # report 44100/48000 as default_samplerate.  Force 16000
-                # when we matched the Reachy device by name.
-                dev_rate = int(dev_info["default_samplerate"])
-                if device_name and "reachy" in device_name.lower():
-                    dev_rate = 16000
-                if dev_rate != sample_rate:
-                    # Simple linear resample
-                    ratio = dev_rate / sample_rate
-                    n_out = int(len(audio) * ratio)
-                    indices = np.linspace(0, len(audio) - 1, n_out)
-                    play_audio = np.interp(indices, np.arange(len(audio)), audio).astype(np.float32)
-                    play_rate = dev_rate
 
-                # Reachy Mini Audio needs stereo
-                if dev_info["max_output_channels"] >= 2 and play_audio.ndim == 1:
-                    play_audio = np.column_stack([play_audio, play_audio])
+            dev_info = sd.query_devices(out_device, kind="output")
+            dev_rate = int(dev_info["default_samplerate"])
+            if out_device is not None and device_name and "reachy" in device_name.lower():
+                dev_rate = 16000  # Reachy Mini Audio hardware limit
+
+            if dev_rate != sample_rate:
+                ratio = dev_rate / sample_rate
+                n_out = int(len(audio) * ratio)
+                indices = np.linspace(0, len(audio) - 1, n_out)
+                play_audio = np.interp(indices, np.arange(len(audio)), audio).astype(np.float32)
+                play_rate = dev_rate
 
             # Apply volume gain
             vol = self.app.config.audio_volume
             if vol != 1.0:
                 play_audio = np.clip(play_audio * vol, -1.0, 1.0).astype(np.float32)
 
+            # Ensure contiguous owned copy before passing to portaudio.
+            play_audio = np.ascontiguousarray(play_audio, dtype=np.float32)
+            # Reshape to (N, channels) if needed
+            if play_audio.ndim == 1:
+                play_audio = play_audio.reshape(-1, 1)
+
             finished = asyncio.Event()
             play_error: list[Exception] = []
+            # Use a threading.Event (not asyncio.Event) to signal stop from
+            # the asyncio thread into the player thread — avoids calling
+            # sd.stop() across threads which causes portaudio double-free.
+            import threading
+            stop_flag = threading.Event()
 
-            def _play_blocking():
+            def _play_streaming():
+                """Write audio in chunks via OutputStream — fully self-contained
+                in one thread, so no cross-thread sd.stop() race."""
+                import sounddevice as _sd
+                chunk_frames = 1024
+                n_ch = play_audio.shape[1]
                 try:
-                    sd.play(play_audio, samplerate=play_rate, device=out_device, blocking=True)
+                    with _sd.OutputStream(
+                        samplerate=play_rate,
+                        device=out_device,
+                        channels=n_ch,
+                        dtype="float32",
+                    ) as stream:
+                        pos = 0
+                        while pos < len(play_audio):
+                            if stop_flag.is_set():
+                                break
+                            end = min(pos + chunk_frames, len(play_audio))
+                            stream.write(play_audio[pos:end])
+                            pos = end
                 except Exception as e:
                     play_error.append(e)
                 finally:
-                    finished.set()
+                    loop.call_soon_threadsafe(finished.set)
 
             loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, _play_blocking)
+            loop.run_in_executor(None, _play_streaming)
 
             while not finished.is_set():
                 if self._interrupt_event.is_set():
-                    sd.stop()
+                    stop_flag.set()  # signal thread to stop gracefully
+                    await asyncio.sleep(0.05)  # brief wait for thread to exit stream
                     return True
                 await asyncio.sleep(0.02)  # 20ms poll
 
