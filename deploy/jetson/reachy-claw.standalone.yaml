@@ -1,0 +1,103 @@
+# reachy-claw.yaml — Jetson Orin Nano, Standalone (No Robot)
+# Hardware: Logitech C920 webcam, Bluetooth speakerphone (see docs/AUDIO_BLUETOOTH.md)
+# This file lives at /home/anand/claude-stuff/suharvest/reachy-claw.yaml
+# Run: cd reachy-claw && uv run python -m reachy_claw --config ../reachy-claw.yaml
+
+# ── LLM ────────────────────────────────────────────────────────────────────────
+llm:
+  backend: ollama
+  model: gemma4:26b            # multimodal — handles both chat and vision
+  base_url: http://192.168.64.129:11434
+  max_history: 5               # keep last 5 turns of conversation
+  temperature: 0.7
+  system_prompt: ""            # empty = built-in default
+
+# ── Speech-to-Text ─────────────────────────────────────────────────────────────
+stt:
+  backend: paraformer-streaming   # remote service at speech_service_url
+  speech_service_url: http://localhost:8000  # jetson-local-voice Docker service
+  # Fallback: if service is unreachable, auto-falls-back to whisper:base
+  # Uncomment to use local whisper instead:
+  # backend: whisper
+  # whisper_model: base
+
+# ── Text-to-Speech ─────────────────────────────────────────────────────────────
+tts:
+  backend: kokoro              # remote service at speech_service_url
+  speech_service_url: http://localhost:8000
+  kokoro:
+    speaker_id: 52             # af_cute (female English voice)
+    speed: 1.0
+  # Fallback: if service is unreachable, auto-falls-back to 'none' (silent)
+  # Uncomment to use piper instead (install piper separately):
+  # backend: piper
+  # model: /path/to/en_US-lessac-medium.onnx
+
+# ── Voice Activity Detection ────────────────────────────────────────────────────
+vad:
+  backend: energy              # no deps — silero-vad pulls PyTorch (2GB) which times out in Docker on aarch64
+
+# ── Audio ──────────────────────────────────────────────────────────────────────
+audio:
+  # Use Bluetooth speakerphone when paired; fallback to C920 mic:
+  # device: "auto"     → PulseAudio default (set via pactl set-default-source)
+  # device: "plughw:2,0"  → C920 mic directly via ALSA
+  device: null         # null = let PulseAudio choose default
+  sample_rate: 16000
+  silence_threshold: 0.02
+  silence_duration: 0.8
+  max_recording_duration: 30.0
+  volume: 1.0
+
+# ── Barge-in (interrupt TTS with speech) ───────────────────────────────────────
+barge_in:
+  enabled: true
+  energy_threshold: 0.04
+  confirm_frames: 2
+  silero_threshold: 0.5
+  cooldown_ms: 400
+
+# ── Behavior ───────────────────────────────────────────────────────────────────
+behavior:
+  wake_word: null              # null = always listening; set to "hey reachy" to require wake word
+  play_emotions: false         # requires robot — disabled
+  idle_animations: false       # requires robot — disabled
+  standalone_mode: false       # use Ollama LLM for responses (no robot needed)
+
+# ── Vision / Face Tracking ─────────────────────────────────────────────────────
+vision:
+  tracker: mediapipe           # local face tracking (no Docker needed)
+  camera_source: opencv        # use OpenCV directly (not Reachy SDK camera)
+  camera_index: 0              # /dev/video0 (Logitech C920)
+  max_yaw: 30.0
+  max_pitch: 20.0
+  smoothing_alpha: 0.35
+  deadzone: 0.02
+  face_lost_delay: 2.0
+
+# ── Motion ─────────────────────────────────────────────────────────────────────
+motion:
+  emotion_intensity: 0.0       # 0 = no motion output
+  head_tracking_smoothing: 0.3
+  head_tracking_poll_interval: 0.1
+  idle_animation_interval: 60.0
+
+# ── VLM (Vision Language Model) ────────────────────────────────────────────────
+vlm:
+  enabled: false               # set true once voice pipeline confirmed working
+  model: gemma4:26b            # same model as LLM — already loaded, no extra RAM needed
+  prompt: "Describe briefly what you see in this image."
+
+# ── Conversation ───────────────────────────────────────────────────────────────
+conversation:
+  mode: conversation           # "conversation" (listen+respond) or "monologue"
+
+# ── Dashboard (web UI) ─────────────────────────────────────────────────────────
+dashboard:
+  enabled: true
+  port: 8640                   # http://localhost:8640
+
+# ── Plugins ────────────────────────────────────────────────────────────────────
+plugins:
+  face_tracker: false          # mediapipe has no aarch64 PyPI wheel — disabled until installed manually
+  motion: false                # requires compatible Reachy robot hardware

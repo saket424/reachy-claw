@@ -1,0 +1,68 @@
+# Standalone Docker Compose — Jetson Orin Nano, no robot required
+# Runs: jetson-voice (ASR/TTS) + reachy-claw (conversation + dashboard)
+#
+# Usage (run from the reachy-claw repo root):
+#   docker compose -f deploy/jetson/docker-compose.standalone.yml up -d
+#   docker compose -f deploy/jetson/docker-compose.standalone.yml logs -f
+#   docker compose -f deploy/jetson/docker-compose.standalone.yml down
+#
+# Dashboard: http://localhost:8640
+# Voice API: http://localhost:8000/health
+
+services:
+
+  # ── ASR + TTS (Kokoro English, Zipformer streaming ASR) ──────────────────────
+  jetson-voice:
+    image: sensecraft-missionpack.seeed.cn/solution/jetson-voice:v3.0-slim
+    container_name: jetson-voice
+    restart: unless-stopped
+    runtime: nvidia
+    ipc: host
+    network_mode: host
+    environment:
+      - LANGUAGE_MODE=en
+      - LD_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/onnxruntime/capi:/host-nvidia-libs:/host-libs:/host-cuda
+    volumes:
+      - jetson-voice-models:/opt/models
+      - /usr/local/cuda/lib64:/host-cuda:ro
+      - /usr/lib/aarch64-linux-gnu/nvidia:/host-nvidia-libs:ro
+      - /lib/aarch64-linux-gnu:/host-libs:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; r=urllib.request.urlopen('http://localhost:8000/health',timeout=3); import json; d=json.load(r); exit(0 if d.get('streaming_asr') else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+
+  # ── Conversational AI + Dashboard ────────────────────────────────────────────
+  reachy-claw:
+    build:
+      context: ../..
+      dockerfile: deploy/jetson/Dockerfile.reachy-claw
+    image: reachy-claw:local
+    container_name: reachy-claw
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      jetson-voice:
+        condition: service_healthy
+    volumes:
+      # Mount our standalone config (read-only)
+      - ./reachy-claw.standalone.yaml:/app/reachy-claw.yaml:ro
+      # PulseAudio socket for EMEET speaker/mic access
+      - /run/user/1000/pulse:/run/user/1000/pulse
+      # Persistent runtime overrides (dashboard settings)
+      - reachy-claw-data:/root/.reachy-claw
+    environment:
+      - PULSE_SERVER=unix:/run/user/1000/pulse/native
+      - DISPLAY=:0
+    devices:
+      # ALSA fallback access
+      - /dev/snd:/dev/snd
+    group_add:
+      - audio
+    command: ["reachy-claw", "--config", "/app/reachy-claw.yaml", "-v"]
+
+volumes:
+  jetson-voice-models:
+  reachy-claw-data:

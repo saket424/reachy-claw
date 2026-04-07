@@ -1,0 +1,15 @@
+[Unit]
+Description=Auto-connect EMEET OfficeCore M0 Plus Bluetooth speakerphone
+After=bluetooth.service pulseaudio.service network.target
+Wants=bluetooth.service pulseaudio.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/bt-connect.sh
+User=anand
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
