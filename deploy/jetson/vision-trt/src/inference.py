@@ -22,10 +22,11 @@ _ARCFACE_REF = np.array([
     [70.7299, 92.2041],
 ], dtype=np.float32)
 
-# HSEmotion classes
+# FER+ emotion classes (ONNX Model Zoo order)
+# Index 7 ("unknown") is treated as Neutral
 EMOTION_LABELS = [
-    "Anger", "Contempt", "Disgust", "Fear",
-    "Happiness", "Neutral", "Sadness", "Surprise",
+    "Neutral", "Happiness", "Surprise", "Fear",
+    "Disgust", "Anger", "Contempt", "Neutral",
 ]
 
 
@@ -346,16 +347,15 @@ class VisionPipeline:
     def _classify_emotion(
         self, engine, face_crop: np.ndarray
     ) -> tuple[str, float]:
-        """Classify emotion from face crop."""
-        img = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
-        img = img.astype(np.float32) / 255.0
-        # ImageNet normalization
-        mean = np.array([0.485, 0.456, 0.406])
-        std = np.array([0.229, 0.224, 0.225])
-        img = (img - mean) / std
-        img = img.transpose(2, 0, 1)[np.newaxis]  # NCHW
+        """Classify emotion from face crop using FER+ model.
 
-        outputs = engine.infer({"input": img.astype(np.float32)})
+        FER+ expects: [1, 1, 64, 64] float32 grayscale, pixel values 0-255.
+        """
+        gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+        gray = cv2.resize(gray, (64, 64)).astype(np.float32)
+        img = gray[np.newaxis, np.newaxis, :, :]  # [1, 1, 64, 64]
+
+        outputs = engine.infer({"Input3": img})
         logits = list(outputs.values())[0].flatten()
 
         # Softmax

@@ -34,6 +34,36 @@ services:
       retries: 10
       start_period: 90s
 
+  # ── Face detection + emotion recognition (TensorRT, SCRFD + HSEmotion) ──────
+  vision-trt:
+    build:
+      context: ./vision-trt
+    image: vision-trt:local
+    container_name: vision-trt
+    restart: unless-stopped
+    runtime: nvidia
+    network_mode: host
+    devices:
+      - /dev/video0:/dev/video0
+    volumes:
+      # ONNX models (bind mount — survives image rebuilds)
+      - ./vision-trt/models:/app/models:ro
+      # TRT engines (built once on first run, then cached)
+      - vision-trt-engines:/app/engines
+      # Face captures + database
+      - vision-trt-data:/app/data
+    environment:
+      - CAMERA_DEVICE=/dev/video0
+      - CAMERA_WIDTH=1280
+      - CAMERA_HEIGHT=720
+      - TARGET_FPS=15
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8630/health', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
+
   # ── Conversational AI + Dashboard ────────────────────────────────────────────
   reachy-claw:
     build:
@@ -45,6 +75,8 @@ services:
     network_mode: host
     depends_on:
       jetson-voice:
+        condition: service_healthy
+      vision-trt:
         condition: service_healthy
     volumes:
       # Mount our standalone config (read-only)
@@ -59,13 +91,12 @@ services:
     devices:
       # ALSA fallback access
       - /dev/snd:/dev/snd
-      # Webcam (Logitech C920) for MJPEG stream in dashboard
-      - /dev/video0:/dev/video0
     group_add:
       - audio
-      - video
     command: ["reachy-claw", "--config", "/app/reachy-claw.yaml", "-v"]
 
 volumes:
   jetson-voice-models:
   reachy-claw-data:
+  vision-trt-engines:
+  vision-trt-data:

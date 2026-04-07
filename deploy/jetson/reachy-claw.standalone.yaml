@@ -66,8 +66,9 @@ behavior:
 
 # ── Vision / Face Tracking ─────────────────────────────────────────────────────
 vision:
-  tracker: mediapipe           # local face tracking (no Docker needed)
-  camera_source: opencv        # use OpenCV directly (not Reachy SDK camera)
+  tracker: remote              # use vision-trt Docker service (SCRFD + emotion via ONNX Runtime)
+  service_url: tcp://localhost:8631  # ZMQ PUB from vision-trt
+  camera_source: opencv        # OpenCV fallback for dashboard stream when vision-trt unavailable
   camera_index: 0              # /dev/video0 (Logitech C920)
   max_yaw: 30.0
   max_pitch: 20.0
@@ -99,5 +100,5 @@ dashboard:
 
 # ── Plugins ────────────────────────────────────────────────────────────────────
 plugins:
-  face_tracker: false          # mediapipe has no aarch64 PyPI wheel — disabled until installed manually
+  face_tracker: true           # remote tracker via vision-trt ZMQ (no mediapipe needed)
   motion: false                # requires compatible Reachy robot hardware

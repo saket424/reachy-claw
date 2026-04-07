@@ -1,6 +1,8 @@
-"""TensorRT engine loading and management.
+"""ONNX Runtime inference engine.
 
-Handles ONNX → TensorRT conversion (cached) and engine lifecycle.
+Replaces the previous TensorRT implementation. Uses onnxruntime (CPU) which
+is available on l4t-base without needing TensorRT native libraries.
+GPU execution via CUDAExecutionProvider is used if available.
 """
 
 import logging
@@ -12,214 +14,87 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-class TRTEngine:
-    """Wrapper around a TensorRT engine with numpy I/O."""
+class OrtEngine:
+    """Wrapper around an ONNX Runtime session with numpy I/O."""
 
-    def __init__(self, engine_path: str, onnx_path: str | None = None,
-                 input_shape: tuple | None = None):
-        self._engine_path = engine_path
+    def __init__(self, onnx_path: str):
         self._onnx_path = onnx_path
-        self._input_shape = input_shape  # e.g. (1, 3, 640, 640) for fixed dims
-        self._engine = None
-        self._context = None
-        self._stream = None
-        self._cuda_ctx = None  # PyCUDA context for thread safety
-        self._bindings = {}  # name → (device_ptr, host_array, shape)
+        self._session = None
+        self._input_names: list[str] = []
+        self._output_names: list[str] = []
 
     def build_or_load(self) -> bool:
-        """Load cached engine or build from ONNX."""
+        """Load the ONNX model via ONNX Runtime."""
         try:
-            import tensorrt as trt
-            import pycuda.driver as cuda
-            import pycuda.autoinit  # noqa: F401
+            import onnxruntime as ort
         except ImportError as e:
-            logger.error(f"TensorRT/PyCUDA not available: {e}")
+            logger.error(f"onnxruntime not available: {e}")
             return False
 
-        # Save CUDA context for thread-safe inference
-        self._cuda_ctx = cuda.Context.get_current()
-
-        trt_logger = trt.Logger(trt.Logger.WARNING)
-
-        if os.path.exists(self._engine_path):
-            logger.info(f"Loading cached TRT engine: {self._engine_path}")
-            return self._load_engine(trt_logger)
-
-        if not self._onnx_path or not os.path.exists(self._onnx_path):
-            logger.error(f"No ONNX model found: {self._onnx_path}")
+        if not os.path.exists(self._onnx_path):
+            logger.error(f"ONNX model not found: {self._onnx_path}")
             return False
 
-        logger.info(f"Building TRT engine from {self._onnx_path} (this may take 20-60s)...")
-        return self._build_engine(trt_logger)
+        # Prefer GPU if CUDAExecutionProvider is available
+        available = ort.get_available_providers()
+        if "CUDAExecutionProvider" in available:
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            logger.info(f"Loading {self._onnx_path} with CUDA provider")
+        else:
+            providers = ["CPUExecutionProvider"]
+            logger.info(f"Loading {self._onnx_path} with CPU provider")
 
-    def _load_engine(self, trt_logger) -> bool:
-        import tensorrt as trt
-        import pycuda.driver as cuda
-
-        runtime = trt.Runtime(trt_logger)
-        with open(self._engine_path, "rb") as f:
-            self._engine = runtime.deserialize_cuda_engine(f.read())
-
-        if self._engine is None:
-            logger.error("Failed to deserialize TRT engine")
+        try:
+            opts = ort.SessionOptions()
+            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            opts.intra_op_num_threads = 2
+            self._session = ort.InferenceSession(
+                self._onnx_path, sess_options=opts, providers=providers
+            )
+            self._input_names = [inp.name for inp in self._session.get_inputs()]
+            self._output_names = [out.name for out in self._session.get_outputs()]
+            logger.info(
+                f"ORT session ready: {os.path.basename(self._onnx_path)} "
+                f"inputs={self._input_names} outputs={self._output_names}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to create ORT session for {self._onnx_path}: {e}")
             return False
-
-        self._context = self._engine.create_execution_context()
-        self._stream = cuda.Stream()
-        self._allocate_buffers()
-        return True
-
-    def _build_engine(self, trt_logger) -> bool:
-        import tensorrt as trt
-        import pycuda.driver as cuda
-
-        builder = trt.Builder(trt_logger)
-        network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
-        parser = trt.OnnxParser(network, trt_logger)
-
-        with open(self._onnx_path, "rb") as f:
-            if not parser.parse(f.read()):
-                for i in range(parser.num_errors):
-                    logger.error(f"ONNX parse error: {parser.get_error(i)}")
-                return False
-
-        config = builder.create_builder_config()
-        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 28)  # 256 MB
-        if builder.platform_has_fast_fp16:
-            config.set_flag(trt.BuilderFlag.FP16)
-            logger.info("FP16 enabled")
-
-        # Handle dynamic input shapes — create optimization profile
-        has_dynamic = False
-        for i in range(network.num_inputs):
-            inp = network.get_input(i)
-            shape = inp.shape
-            if any(d == -1 for d in shape):
-                has_dynamic = True
-                break
-
-        if has_dynamic:
-            profile = builder.create_optimization_profile()
-            for i in range(network.num_inputs):
-                inp = network.get_input(i)
-                name = inp.name
-                shape = list(inp.shape)
-
-                if self._input_shape:
-                    # Use explicitly provided shape
-                    fixed = list(self._input_shape)
-                else:
-                    # Infer sensible defaults for dynamic dims
-                    fixed = []
-                    for j, d in enumerate(shape):
-                        if d == -1:
-                            # Batch dim (index 0) → 1; spatial dims → 640
-                            fixed.append(1 if j == 0 else 640)
-                        else:
-                            fixed.append(d)
-
-                logger.info(f"Dynamic input '{name}': shape={shape} → fixed={fixed}")
-                profile.set_shape(name, fixed, fixed, fixed)
-            config.add_optimization_profile(profile)
-
-        engine_bytes = builder.build_serialized_network(network, config)
-        if engine_bytes is None:
-            logger.error("TRT engine build failed")
-            return False
-
-        # Cache the engine
-        os.makedirs(os.path.dirname(self._engine_path), exist_ok=True)
-        with open(self._engine_path, "wb") as f:
-            f.write(engine_bytes)
-        logger.info(f"TRT engine cached: {self._engine_path}")
-
-        runtime = trt.Runtime(trt_logger)
-        self._engine = runtime.deserialize_cuda_engine(engine_bytes)
-        self._context = self._engine.create_execution_context()
-        self._stream = cuda.Stream()
-        self._allocate_buffers()
-        return True
-
-    def _allocate_buffers(self):
-        import pycuda.driver as cuda
-
-        for i in range(self._engine.num_io_tensors):
-            name = self._engine.get_tensor_name(i)
-            shape = self._engine.get_tensor_shape(name)
-            dtype = np.float32  # assume FP32 I/O
-            size = int(np.prod(shape))
-            host = np.empty(size, dtype=dtype)
-            device = cuda.mem_alloc(host.nbytes)
-            self._bindings[name] = (device, host, tuple(shape))
 
     def infer(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        """Run inference with named inputs/outputs."""
-        import pycuda.driver as cuda
-
-        # Ensure CUDA context is active on this thread
-        if self._cuda_ctx is not None:
-            self._cuda_ctx.push()
-
-        try:
-            return self._infer_impl(inputs)
-        finally:
-            if self._cuda_ctx is not None:
-                self._cuda_ctx.pop()
-
-    def _infer_impl(self, inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        import pycuda.driver as cuda
-
-        for name, data in inputs.items():
-            if name not in self._bindings:
-                continue
-            device, host, shape = self._bindings[name]
-            np.copyto(host, data.ravel())
-            cuda.memcpy_htod_async(device, host, self._stream)
-
-        # Set tensor addresses
-        for name, (device, _, _) in self._bindings.items():
-            self._context.set_tensor_address(name, int(device))
-
-        self._context.execute_async_v3(self._stream.handle)
-
-        outputs = {}
-        for i in range(self._engine.num_io_tensors):
-            name = self._engine.get_tensor_name(i)
-            mode = self._engine.get_tensor_mode(name)
-            if mode.name == "OUTPUT":
-                device, host, shape = self._bindings[name]
-                cuda.memcpy_dtoh_async(host, device, self._stream)
-                outputs[name] = host.reshape(shape).copy()
-
-        self._stream.synchronize()
-        return outputs
+        """Run inference. inputs keyed by input tensor name."""
+        if self._session is None:
+            return {}
+        feed = {k: v.astype(np.float32) for k, v in inputs.items() if k in self._input_names}
+        results = self._session.run(self._output_names, feed)
+        return dict(zip(self._output_names, results))
 
     def close(self):
-        """Release GPU resources."""
-        self._bindings.clear()
-        self._context = None
-        self._engine = None
+        self._session = None
 
 
-def load_engines(model_dir: str, engine_dir: str) -> dict[str, TRTEngine]:
-    """Load all model engines (SCRFD, MobileFaceNet, HSEmotion)."""
+def load_engines(model_dir: str, engine_dir: str) -> dict[str, "OrtEngine"]:
+    """Load all ONNX models (SCRFD, MobileFaceNet, HSEmotion).
+
+    engine_dir is kept for API compatibility but unused — ORT has no separate
+    build step.
+    """
     model_dir = Path(model_dir)
-    engine_dir = Path(engine_dir)
-    engine_dir.mkdir(parents=True, exist_ok=True)
-
     engines = {}
+
     model_specs = {
-        # name: (onnx_file, input_shape_override_or_None)
-        "scrfd": ("scrfd_2.5g_bnkps.onnx", (1, 3, 640, 640)),
-        "arcface": ("w600k_mbf.onnx", (1, 3, 112, 112)),
-        "emotion": ("enet_b0_8_best_afew.onnx", (1, 3, 224, 224)),
+        # name: onnx_file
+        "scrfd": "scrfd_10g_bnkps.onnx",
+        "arcface": "w600k_mbf.onnx",
+        # FER+ model: 64x64 grayscale input, 8-class output
+        # From ONNX Model Zoo (public domain)
+        "emotion": "emotion-ferplus-8.onnx",
     }
 
-    for name, (onnx_file, input_shape) in model_specs.items():
+    for name, onnx_file in model_specs.items():
         onnx_path = model_dir / onnx_file
-        engine_path = engine_dir / f"{name}.engine"
-
-        engine = TRTEngine(str(engine_path), str(onnx_path), input_shape=input_shape)
+        engine = OrtEngine(str(onnx_path))
         if engine.build_or_load():
             engines[name] = engine
             logger.info(f"Engine ready: {name}")

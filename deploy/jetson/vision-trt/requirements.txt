@@ -1,5 +1,5 @@
-# TensorRT + CUDA + OpenCV: installed via apt (python3-libnvinfer, python3-opencv)
-# PyCUDA: installed separately in Dockerfile
+# Inference
+onnxruntime
 
 # Networking
 pyzmq

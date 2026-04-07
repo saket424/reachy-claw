@@ -43,6 +43,9 @@ captures/
 # Whisper models cache
 ~/.cache/whisper/
 
+# vision-trt ONNX models (large binaries, download via deploy/jetson/scripts/download-vision-models.sh)
+deploy/jetson/vision-trt/models/*.onnx
+
 # OS
 .DS_Store
 Thumbs.db

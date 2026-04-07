@@ -18,7 +18,7 @@ COPY . .
 #   - silero-vad omitted: pulls PyTorch (2GB), use energy VAD instead
 #   - mediapipe-vision omitted: no aarch64 PyPI wheel, face tracking disabled
 #   - opencv-python-headless installed separately for MJPEG camera stream
-RUN pip install --no-cache-dir -e ".[audio]" && \
+RUN pip install --no-cache-dir -e ".[audio,remote-vision]" && \
     pip install --no-cache-dir opencv-python-headless
 
 CMD ["reachy-claw", "-v"]
