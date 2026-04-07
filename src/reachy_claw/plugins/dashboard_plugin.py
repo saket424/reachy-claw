@@ -480,12 +480,38 @@ class DashboardPlugin(Plugin):
             logger.debug("Could not restore capture count: %s", e)
 
     async def _handle_stream_proxy(self, request):
-        """Proxy MJPEG stream from vision-trt (same-origin for browser)."""
+        """Proxy MJPEG stream from vision-trt, falling back to direct OpenCV capture."""
         from aiohttp import web, ClientSession, ClientTimeout
 
         vision_url = self.app.config.vision_service_url  # tcp://127.0.0.1:8631
         host = vision_url.replace("tcp://", "").split(":")[0]
         stream_url = f"http://{host}:8630/stream"
+
+        # Try vision-trt first
+        no_timeout = ClientTimeout(total=None, connect=2, sock_read=5)
+        try:
+            async with ClientSession(timeout=no_timeout) as session:
+                async with session.get(stream_url) as upstream:
+                    if upstream.status == 200:
+                        response = web.StreamResponse(
+                            status=200,
+                            headers={"Content-Type": "multipart/x-mixed-replace; boundary=frame"},
+                        )
+                        await response.prepare(request)
+                        async for chunk in upstream.content.iter_any():
+                            await response.write(chunk)
+                        return response
+        except (asyncio.CancelledError, ConnectionResetError):
+            raise
+        except Exception:
+            pass  # fall through to OpenCV
+
+        # Fallback: serve webcam directly via OpenCV MJPEG
+        return await self._handle_stream_opencv(request)
+
+    async def _handle_stream_opencv(self, request):
+        """Serve MJPEG stream directly from webcam using OpenCV."""
+        from aiohttp import web
 
         response = web.StreamResponse(
             status=200,
@@ -493,16 +519,54 @@ class DashboardPlugin(Plugin):
         )
         await response.prepare(request)
 
-        no_timeout = ClientTimeout(total=None, connect=10, sock_read=10)
+        camera_index = getattr(self.app.config, "camera_index", 0)
+
+        def _gen_frames(queue: asyncio.Queue, loop: asyncio.AbstractEventLoop):
+            try:
+                import cv2
+            except ImportError:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+                return
+
+            cap = cv2.VideoCapture(camera_index)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cap.set(cv2.CAP_PROP_FPS, 15)
+
+            try:
+                while True:
+                    ok, frame = cap.read()
+                    if not ok:
+                        break
+                    _, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    data = (
+                        b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+                        + jpg.tobytes()
+                        + b"\r\n"
+                    )
+                    try:
+                        loop.call_soon_threadsafe(queue.put_nowait, data)
+                    except Exception:
+                        break
+            finally:
+                cap.release()
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=2)
+        import threading
+        t = threading.Thread(target=_gen_frames, args=(queue, loop), daemon=True)
+        t.start()
+
         try:
-            async with ClientSession(timeout=no_timeout) as session:
-                async with session.get(stream_url) as upstream:
-                    async for chunk in upstream.content.iter_any():
-                        await response.write(chunk)
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    break
+                await response.write(chunk)
         except (asyncio.CancelledError, ConnectionResetError):
             pass
-        except Exception as e:
-            logger.debug("Stream proxy error: %s", e)
+
         return response
 
     # ── Broadcasting ──────────────────────────────────────────────────

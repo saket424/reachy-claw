@@ -59,8 +59,11 @@ services:
     devices:
       # ALSA fallback access
       - /dev/snd:/dev/snd
+      # Webcam (Logitech C920) for MJPEG stream in dashboard
+      - /dev/video0:/dev/video0
     group_add:
       - audio
+      - video
     command: ["reachy-claw", "--config", "/app/reachy-claw.yaml", "-v"]
 
 volumes:

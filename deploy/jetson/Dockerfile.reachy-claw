@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential meson pkg-config \
     libcairo2-dev libgirepository1.0-dev gobject-introspection \
     libportaudio2 portaudio19-dev ffmpeg libasound2-dev \
-    libgl1 libglib2.0-0 \
+    libgl1 libglib2.0-0 libgomp1 \
     gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
     libv4l-0 \
     && rm -rf /var/lib/apt/lists/*
@@ -17,6 +17,8 @@ COPY . .
 # aarch64 notes:
 #   - silero-vad omitted: pulls PyTorch (2GB), use energy VAD instead
 #   - mediapipe-vision omitted: no aarch64 PyPI wheel, face tracking disabled
-RUN pip install --no-cache-dir -e ".[audio]"
+#   - opencv-python-headless installed separately for MJPEG camera stream
+RUN pip install --no-cache-dir -e ".[audio]" && \
+    pip install --no-cache-dir opencv-python-headless
 
 CMD ["reachy-claw", "-v"]
